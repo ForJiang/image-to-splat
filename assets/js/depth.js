@@ -40,16 +40,16 @@ async function ensurePipe() {
   if (_pipe) return _pipe;
 
   if (!_lib) {
-    _lib = await import('../vendor/transformers/transformers.min.js');
+    _lib = await import('../../vendor/transformers/transformers.min.js');
   }
   const { pipeline, env } = _lib;
 
   env.allowLocalModels = true;
   env.allowRemoteModels = false; // 禁止回退到 HF 远端：站点自足
-  // js/depth.js → 仓库根下 models/（兼容 GitHub Pages 子路径）
-  env.localModelPath = new URL('../models/', import.meta.url).pathname;
+  // assets/js/depth.js → 仓库根下 models/（兼容 GitHub Pages 子路径）
+  env.localModelPath = new URL('../../models/', import.meta.url).pathname;
   env.useBrowserCache = true;
-  env.backends.onnx.wasm.wasmPaths = new URL('../vendor/transformers/', import.meta.url).href;
+  env.backends.onnx.wasm.wasmPaths = new URL('../../vendor/transformers/', import.meta.url).href;
 
   const attempts = hasWebGPU()
     ? [['webgpu', 'fp16'], ['wasm', 'q8']]

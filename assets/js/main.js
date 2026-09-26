@@ -4,23 +4,26 @@ import { SplatViewer } from './viewer.js';
 import { buildCloud, normalizeDepth, WORLD } from './splat.js';
 import { exportPLY, exportSplat, exportCanvasPNG } from './exporter.js';
 import { extractFrames } from './video.js';
+import { startWaveBackground } from './wave-bg.js';
+import { revealAll } from './reveal.js';
+import { t, applyI18n, detectLang, setLang, getLang } from './i18n.js';
 
 const $ = (id) => document.getElementById(id);
 const els = {
+  langBtn: $('langBtn'),
   dropzone: $('dropzone'), fileInput: $('fileInput'),
-  landing: $('landing'), workspace: $('workspace'),
-  deviceChip: $('deviceChip'),
-  srcCanvas: $('srcCanvas'), depthCanvas: $('depthCanvas'),
-  videoStrip: $('videoStrip'), frameNote: $('frameNote'),
-  qualitySeg: $('qualitySeg'), qualityNote: $('qualityNote'),
-  strengthRange: $('strengthRange'), strengthOut: $('strengthOut'),
-  sizeRange: $('sizeRange'), sizeOut: $('sizeOut'),
-  invertChk: $('invertChk'),
-  exportPly: $('exportPly'), exportSplat: $('exportSplat'), exportDepth: $('exportDepth'),
-  changeFileBtn: $('changeFileBtn'),
-  statusText: $('statusText'), statusPill: $('statusPill'),
-  autoOrbitBtn: $('autoOrbitBtn'), resetViewBtn: $('resetViewBtn'), shotBtn: $('shotBtn'),
-  cloudInfo: $('cloudInfo'), toast: $('toast'),
+  optQuality: $('optQuality'), optStrength: $('optStrength'), optStrengthVal: $('optStrengthVal'),
+  optSize: $('optSize'), optSizeVal: $('optSizeVal'), optInvert: $('optInvert'),
+  rebuildBtn: $('rebuildBtn'), exportPly: $('exportPly'), exportSplat: $('exportSplat'), exportDepth: $('exportDepth'),
+  progressWrap: $('progressWrap'), progressBar: $('progressBar'), progressText: $('progressText'),
+  sourceHead: $('sourceHead'), sourceCount: $('sourceCount'),
+  thumbs: $('thumbs'), srcCanvas: $('srcCanvas'), depthCanvas: $('depthCanvas'),
+  videoStrip: $('videoStrip'), frameNote: $('frameNote'), samplesRow: $('samplesRow'),
+  statusText: $('statusText'), cloudCount: $('cloudCount'),
+  orbitBtn: $('orbitBtn'), resetBtn: $('resetBtn'), shotBtn: $('shotBtn'),
+  viewport: $('viewport'),
+  summary: $('summary'), statSplats: $('statSplats'), statInfer: $('statInfer'), statBuild: $('statBuild'),
+  toasts: $('toasts'),
 };
 
 const MOCK = new URLSearchParams(location.search).has('mock');
@@ -33,36 +36,62 @@ const state = {
   busy: false, dirty: false, inferMs: 0,
 };
 
-const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
-const viewer = new SplatViewer($('viewport'), { onUserOrbit: syncOrbitBtn });
-viewer.setAutoRotate(!reduceMotion);
-syncOrbitBtn();
+/* ---------------- 波场背景 / 入场动画 / 双语 ---------------- */
+
+startWaveBackground($('bgCanvas'));
+
+function syncLangBtn() {
+  els.langBtn.textContent = t('lang.btn');
+}
+setLang(detectLang());
+applyI18n();
+syncLangBtn();
+
+els.langBtn.addEventListener('click', () => {
+  setLang(getLang() === 'zh' ? 'en' : 'zh');
+  applyI18n();
+  syncLangBtn();
+  toast(t('lang.switched'));
+});
 
 /* ---------------- UI 基础 ---------------- */
 
-function setStatus(text, busy) {
+function setStatus(text) {
   els.statusText.textContent = text;
-  els.statusPill.querySelector('.spinner').hidden = !busy;
 }
 
-let toastTimer = null;
 function toast(msg, isErr = false) {
-  els.toast.textContent = msg;
-  els.toast.classList.toggle('is-err', isErr);
-  els.toast.hidden = false;
-  clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => { els.toast.hidden = true; }, isErr ? 5200 : 3600);
+  const div = document.createElement('div');
+  div.className = 'toast' + (isErr ? ' is-err' : '');
+  // cleaner 约定：成功 ✓ / 失败 ✕ 前缀（词典里已带 ✓ 的不再重复）
+  div.textContent = (isErr ? '✕' : msg.startsWith('✓') ? '' : '✓') + msg.replace(/^✓\s*/, '');
+  els.toasts.appendChild(div);
+  setTimeout(() => div.remove(), isErr ? 5200 : 3600);
 }
 
 function syncOrbitBtn() {
-  els.autoOrbitBtn.classList.toggle('is-active', viewer.autoRotate);
+  els.orbitBtn.classList.toggle('is-active', viewer.autoRotate);
+  els.orbitBtn.setAttribute('aria-pressed', String(viewer.autoRotate));
 }
 
-function updateDeviceChip() {
-  if (MOCK) { els.deviceChip.textContent = '🧪 Mock 深度'; return; }
-  els.deviceChip.textContent = ('gpu' in navigator) ? '⚡ WebGPU 就绪' : '⚙️ CPU · WASM';
-}
-updateDeviceChip();
+/* ---------------- 3D 视口 ---------------- */
+
+const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
+const viewer = new SplatViewer(els.viewport, { onUserOrbit: syncOrbitBtn });
+viewer.setAutoRotate(!reduceMotion);
+syncOrbitBtn();
+
+els.orbitBtn.addEventListener('click', () => {
+  viewer.setAutoRotate(!viewer.autoRotate);
+  syncOrbitBtn();
+});
+els.resetBtn.addEventListener('click', () => viewer.resetView());
+els.shotBtn.addEventListener('click', async () => {
+  const blob = await viewer.screenshot();
+  if (!blob) return;
+  downloadBlob(blob, 'image2splat-view.png');
+  toast(t('toast.shotDownloaded'));
+});
 
 /* ---------------- 深度推理封装 ---------------- */
 
@@ -72,15 +101,20 @@ async function estimate(canvas) {
     return mockDepth(canvas);
   }
   const dm = await import('./depth.js');
-  dm.setProgressHandler((p, txt) => setStatus(`加载深度模型… ${txt || Math.round(p * 100) + '%'}`, true));
+  dm.setProgressHandler((p) => {
+    els.progressWrap.hidden = false;
+    els.progressBar.style.width = `${Math.round(p * 100)}%`;
+    els.progressText.textContent = `${Math.round(p * 100)}%`;
+    setStatus(t('status.model', { pct: Math.round(p * 100) + '%' }));
+  });
   const t0 = performance.now();
   const out = await dm.estimateDepth(canvas);
   state.inferMs = performance.now() - t0;
-  els.deviceChip.textContent = dm.currentDevice() === 'webgpu' ? '⚡ WebGPU 已启用' : '⚙️ CPU · WASM';
+  els.progressWrap.hidden = true;
   return out;
 }
 
-// 离线开发 / 无网络自检：合成一张「中心近、下方近」的深度图
+// 离线开发 / 自检：合成一张「中心近、下方近」的深度图（?mock=1）
 function mockDepth(canvas) {
   const w = canvas.width, h = canvas.height;
   const data = new Float32Array(w * h);
@@ -131,7 +165,7 @@ async function handleFile(file) {
   const isImage = file.type.startsWith('image/');
   const isVideo = file.type.startsWith('video/');
   if (!isImage && !isVideo) {
-    toast('请选择图片或视频文件', true);
+    toast(t('toast.unsupported'), true);
     return;
   }
 
@@ -142,18 +176,16 @@ async function handleFile(file) {
       els.videoStrip.hidden = true;
       els.frameNote.hidden = true;
       state.bitmap = await imageToBitmap(file);
-      enterWorkspace();
       await runPipeline();
     } else {
       state.kind = 'video';
-      enterWorkspace();
-      setStatus('解析视频帧…', true);
+      setStatus(t('status.parsing', { i: 0, n: 16 }));
       els.videoStrip.hidden = false;
       els.frameNote.hidden = false;
       els.videoStrip.innerHTML = '';
       state.frames = await extractFrames(file, {
         count: 16,
-        onFrame: (i, n) => setStatus(`解析视频帧… ${i}/${n}`, true),
+        onFrame: (i, n) => setStatus(t('status.parsing', { i, n })),
       });
       buildStrip();
       state.selFrame = state.frames.reduce(
@@ -161,19 +193,12 @@ async function handleFile(file) {
       markStrip();
       await runPipeline();
     }
+    els.samplesRow.hidden = true;
   } catch (err) {
     console.error(err);
-    toast(err?.message || '处理失败，请换一个文件试试', true);
-    setStatus('出错了，可重新选择文件', false);
+    toast(err?.message === 'E_VIDEO' ? t('error.video') : (err?.message || t('error.pipeline')), true);
+    setStatus(t('status.error'));
   }
-}
-
-function enterWorkspace() {
-  els.landing.hidden = true;
-  els.workspace.hidden = false;
-  els.exportPly.disabled = true;
-  els.exportSplat.disabled = true;
-  els.exportDepth.disabled = true;
 }
 
 /* ---------------- 流水线 ---------------- */
@@ -190,16 +215,25 @@ async function runPipeline() {
     drawThumb(els.srcCanvas, state.source);
 
     // 2) 深度推理
-    setStatus(state.kind === 'video' ? '所选帧深度推理中…' : '深度推理中…', true);
+    setStatus(t('status.infer'));
     state.depth = await estimate(state.source);
     drawDepthPreview();
 
     // 3) 点云
     rebuildCloud();
+    els.sourceHead.hidden = false;
+    els.thumbs.hidden = false;
+    els.sourceCount.textContent = `${state.source.width}×${state.source.height}`;
+    els.rebuildBtn.disabled = false;
+    els.exportPly.disabled = false;
+    els.exportSplat.disabled = false;
+    els.exportDepth.disabled = false;
+    els.summary.hidden = false;
+    revealAll();
   } catch (err) {
     console.error(err);
-    toast(err?.message || '推理失败', true);
-    setStatus('出错了', false);
+    toast(err?.message === 'E_VIDEO' ? t('error.video') : (err?.message || t('error.pipeline')), true);
+    setStatus(t('status.error'));
   } finally {
     state.busy = false;
     if (state.dirty) { state.dirty = false; runPipeline(); }
@@ -213,12 +247,11 @@ function rebuildCloud() {
   const buildMs = performance.now() - t0;
   viewer.setCloud(state.cloud);
 
-  els.cloudInfo.textContent =
-    `${state.cloud.count.toLocaleString('zh-CN')} 泼溅 · 推理 ${(state.inferMs / 1000).toFixed(1)}s + 重建 ${Math.round(buildMs)}ms`;
-  setStatus('完成 · 拖拽旋转 / 滚轮缩放', false);
-  els.exportPly.disabled = false;
-  els.exportSplat.disabled = false;
-  els.exportDepth.disabled = false;
+  els.cloudCount.textContent = state.cloud.count.toLocaleString();
+  els.statSplats.textContent = state.cloud.count.toLocaleString();
+  els.statInfer.textContent = `${(state.inferMs / 1000).toFixed(1)}s`;
+  els.statBuild.textContent = `${Math.round(buildMs)}ms`;
+  setStatus(t('status.done'));
 }
 
 function drawThumb(canvasEl, src) {
@@ -248,14 +281,14 @@ function buildStrip() {
     const f = state.frames[i];
     const btn = document.createElement('button');
     btn.className = 'vf';
-    btn.title = `${f.t.toFixed(1)}s · 清晰度 ${Math.round(f.sharp)}`;
+    btn.title = `${f.t.toFixed(1)}s`;
     const c = document.createElement('canvas');
     c.width = 76; c.height = 48;
     c.getContext('2d').drawImage(f.canvas, 0, 0, 76, 48);
-    const t = document.createElement('span');
-    t.className = 'ft';
-    t.textContent = f.t.toFixed(1) + 's';
-    btn.append(c, t);
+    const time = document.createElement('span');
+    time.className = 'ft';
+    time.textContent = f.t.toFixed(1) + 's';
+    btn.append(c, time);
     btn.addEventListener('click', () => {
       if (state.selFrame === i) return;
       state.selFrame = i;
@@ -271,20 +304,48 @@ function markStrip() {
     b.classList.toggle('is-sel', i === state.selFrame));
 }
 
+/* ---------------- 导出 ---------------- */
+
+function downloadBlob(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 4000);
+}
+
+els.exportPly.addEventListener('click', () => {
+  if (!state.cloud) { toast(t('toast.needFirst'), true); return; }
+  exportPLY(state.cloud, `image2splat-${state.cloud.count}pts.ply`);
+  toast(t('toast.plyDownloaded'));
+});
+els.exportSplat.addEventListener('click', () => {
+  if (!state.cloud) { toast(t('toast.needFirst'), true); return; }
+  exportSplat(state.cloud, `image2splat-${state.cloud.count}.splat`);
+  toast(t('toast.splatDownloaded'));
+});
+els.exportDepth.addEventListener('click', () => {
+  if (!state.depth) { toast(t('toast.needFirst'), true); return; }
+  exportCanvasPNG(els.depthCanvas, `image2splat-depth-${state.depth.w}.png`);
+  toast(t('toast.depthDownloaded'));
+});
+els.rebuildBtn.addEventListener('click', () => runPipeline());
+
 /* ---------------- 事件接线 ---------------- */
 
 // 拖放与选择
 ['dragover', 'dragenter'].forEach(ev =>
   window.addEventListener(ev, (e) => {
     e.preventDefault();
-    if (!els.workspace.hidden) return;
-    els.dropzone.classList.add('is-drag');
+    els.dropzone.classList.add('drag');
   }));
 ['dragleave', 'drop'].forEach(ev =>
   window.addEventListener(ev, (e) => {
     e.preventDefault();
-    if (ev === 'drop' && !els.workspace.hidden) return;
-    els.dropzone.classList.remove('is-drag');
+    els.dropzone.classList.remove('drag');
     if (ev === 'drop') {
       const f = e.dataTransfer?.files?.[0];
       if (f) handleFile(f);
@@ -298,7 +359,6 @@ els.fileInput.addEventListener('change', () => {
   handleFile(els.fileInput.files[0]);
   els.fileInput.value = '';
 });
-els.changeFileBtn.addEventListener('click', () => els.fileInput.click());
 
 // 示例
 document.querySelectorAll('.sample-btn').forEach(btn =>
@@ -310,66 +370,30 @@ document.querySelectorAll('.sample-btn').forEach(btn =>
       });
       handleFile(new File([blob], btn.dataset.src, { type: 'image/jpeg' }));
     } catch {
-      toast('示例加载失败：请通过 HTTP 服务访问本站（如 python3 -m http.server）', true);
+      toast(t('toast.sampleFailed'), true);
     }
   }));
 
 // 参数
-els.qualitySeg.addEventListener('click', (e) => {
-  const btn = e.target.closest('.seg-btn');
-  if (!btn || btn.classList.contains('is-active')) return;
-  els.qualitySeg.querySelectorAll('.seg-btn').forEach(b => b.classList.remove('is-active'));
-  btn.classList.add('is-active');
-  state.params.quality = +btn.dataset.v;
+els.optQuality.addEventListener('change', () => {
+  state.params.quality = +els.optQuality.value;
   runPipeline(); // 重新推理
 });
-
-els.strengthRange.addEventListener('input', () => {
-  state.params.strength = +els.strengthRange.value;
-  els.strengthOut.textContent = state.params.strength.toFixed(2);
+els.optStrength.addEventListener('input', () => {
+  state.params.strength = +els.optStrength.value;
+  els.optStrengthVal.textContent = state.params.strength.toFixed(2);
   rebuildCloud();
 });
-els.sizeRange.addEventListener('input', () => {
-  state.params.size = +els.sizeRange.value;
-  els.sizeOut.textContent = state.params.size.toFixed(2);
+els.optSize.addEventListener('input', () => {
+  state.params.size = +els.optSize.value;
+  els.optSizeVal.textContent = state.params.size.toFixed(2);
   rebuildCloud();
 });
-els.invertChk.addEventListener('change', () => {
-  state.params.invert = els.invertChk.checked;
+els.optInvert.addEventListener('change', () => {
+  state.params.invert = els.optInvert.value === 'on';
   drawDepthPreview();
   rebuildCloud();
 });
 
-// 视口工具
-els.autoOrbitBtn.addEventListener('click', () => {
-  viewer.setAutoRotate(!viewer.autoRotate);
-  syncOrbitBtn();
-});
-els.resetViewBtn.addEventListener('click', () => viewer.resetView());
-els.shotBtn.addEventListener('click', async () => {
-  const blob = await viewer.screenshot();
-  if (blob) exportCanvasPNGFrom(blob);
-});
-function exportCanvasPNGFrom(blob) {
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url; a.download = 'image2splat-view.png';
-  a.click();
-  setTimeout(() => URL.revokeObjectURL(url), 4000);
-}
-
-// 导出
-els.exportPly.addEventListener('click', () => {
-  if (!state.cloud) return;
-  exportPLY(state.cloud);
-  toast('已导出 .ply 点云');
-});
-els.exportSplat.addEventListener('click', () => {
-  if (!state.cloud) return;
-  exportSplat(state.cloud);
-  toast('已导出 .splat，可拖入 SuperSplat 查看');
-});
-els.exportDepth.addEventListener('click', () => {
-  exportCanvasPNG(els.depthCanvas, `image2splat-depth-${state.depth?.w || 0}.png`);
-  toast('已导出深度图');
-});
+setStatus(t('status.idle'));
+revealAll();

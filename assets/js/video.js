@@ -33,7 +33,7 @@ async function seekFrames(file, { count, maxSide, onFrame }) {
       frames.push(snapshot(video, maxSide, t));
       onFrame?.(i + 1, count);
     }
-    if (!frames.length) throw new Error('未读取到画面');
+    if (!frames.length) throw new Error('E_VIDEO');
     return frames;
   } finally {
     cleanup(video, url);
@@ -95,7 +95,7 @@ async function playFrames(file, { count, maxSide, onFrame }) {
     });
 
     video.pause();
-    if (!samples.length) throw new Error('无法从该视频读取画面，请换 MP4/WebM 试试');
+    if (!samples.length) throw new Error('E_VIDEO');
 
     // 均匀挑出 count 帧
     if (samples.length > count) {
