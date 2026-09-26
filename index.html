@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>Image2Splat · 图生 3D 高斯泼溅</title>
+<meta name="description" content="在浏览器中把一张图片或视频帧变成可交互的 3D 高斯泼溅点云。模型与页面全自托管，推理全程本地运行，文件不上传，可导出 .ply / .splat。">
+<meta name="theme-color" content="#0a0d13">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%230d1017'/%3E%3Cdefs%3E%3CradialGradient id='g' cx='35%25' cy='35%25' r='80%25'%3E%3Cstop offset='0%25' stop-color='%23c4b5fd'/%3E%3Cstop offset='55%25' stop-color='%237c5cff'/%3E%3Cstop offset='100%25' stop-color='%232dd4bf'/%3E%3C/radialGradient%3E%3C/defs%3E%3Ccircle cx='32' cy='33' r='16' fill='url(%23g)'/%3E%3Ccircle cx='17' cy='46' r='5.5' fill='%232dd4bf'/%3E%3Ccircle cx='48' cy='17' r='4.5' fill='%23a78bfa'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="css/style.css">
+<script type="importmap">
+{
+  "imports": {
+    "three": "./vendor/three/three.module.js",
+    "three/addons/": "./vendor/three/addons/"
+  }
+}
+</script>
+</head>
+<body>
+<noscript><p style="padding:2rem;text-align:center">本站需要在浏览器中启用 JavaScript 才能运行本地 3D 重建。</p></noscript>
+
+<header class="site-header">
+  <div class="brand">
+    <span class="logo-dot" aria-hidden="true"></span>
+    <span class="brand-name">Image2Splat</span>
+    <span class="brand-sub">图生 3D 高斯泼溅</span>
+  </div>
+  <nav class="header-nav">
+    <span class="chip" id="deviceChip">检测环境中…</span>
+    <a class="chip chip-link" href="https://github.com/ForJiang/image-to-splat" target="_blank" rel="noopener">GitHub ↗</a>
+  </nav>
+</header>
+
+<main>
+  <!-- ============ 着陆区 ============ -->
+  <section id="landing" class="landing">
+    <div class="hero">
+      <h1 class="hero-title">一张图，<span class="grad">旋转的三维世界</span></h1>
+      <p class="hero-desc">
+        拖入图片或视频，浏览器内的深度估计模型会为每个像素估算距离，把它们变成一枚枚带颜色的高斯「泼溅」，
+        组成可拖拽旋转的 3D 点云。<strong>全程本地运行，文件不会上传。</strong>
+      </p>
+      <div id="dropzone" class="dropzone" tabindex="0" role="button" aria-label="选择或拖入图片 / 视频">
+        <input type="file" id="fileInput" accept="image/*,video/*" hidden>
+        <svg class="dz-icon" viewBox="0 0 48 48" fill="none" aria-hidden="true">
+          <rect x="6" y="10" width="36" height="28" rx="5" stroke="currentColor" stroke-width="2.4"/>
+          <circle cx="17" cy="20" r="3.2" fill="currentColor"/>
+          <path d="M10 34l9.5-9 6.5 6 6-7 6.5 8" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+        <p class="dz-main">拖拽 <b>图片 / 视频</b> 到这里，或点击选择</p>
+        <p class="dz-hint">JPG · PNG · WebP · MP4 · WebM · MOV　首次使用需加载约 50 MB 模型（之后有缓存）</p>
+      </div>
+      <div class="samples">
+        <span class="samples-label">没有素材？试试示例：</span>
+        <button class="sample-btn" data-src="assets/sample-aloe.jpg">
+          <img src="assets/sample-aloe.jpg" alt="盆栽示例">
+          <span>盆栽</span>
+        </button>
+        <button class="sample-btn" data-src="assets/sample-alley.jpg">
+          <img src="assets/sample-alley.jpg" alt="夜巷示例">
+          <span>夜巷</span>
+        </button>
+      </div>
+    </div>
+
+    <div class="feature-cards">
+      <div class="card"><span class="card-no">01</span><h3>深度估计</h3>
+        <p>Depth Anything V2（ONNX）在本地通过 WebGPU / WASM 为每个像素估算相对深度，模型随站点自托管，无需联网调用任何 API。</p></div>
+      <div class="card"><span class="card-no">02</span><h3>高斯点云</h3>
+        <p>每个像素生成一枚带颜色的高斯泼溅：近处凸起、远处凹陷，边缘自动收缩、位置抖动打散网格感，构成柔软的 3D 浮雕。</p></div>
+      <div class="card"><span class="card-no">03</span><h3>交互与导出</h3>
+        <p>拖拽旋转、滚轮缩放、自动环绕；一键导出 <code>.ply</code> 点云与 <code>.splat</code> 泼溅文件，可导入 SuperSplat、Blender、CloudCompare。</p></div>
+    </div>
+  </section>
+
+  <!-- ============ 工作台 ============ -->
+  <section id="workspace" class="workspace" hidden>
+    <aside class="ws-left">
+      <div class="panel">
+        <div class="panel-title">源与深度</div>
+        <div class="thumb-row">
+          <figure><canvas id="srcCanvas" width="2" height="2"></canvas><figcaption>输入</figcaption></figure>
+          <figure><canvas id="depthCanvas" width="2" height="2"></canvas><figcaption>深度图</figcaption></figure>
+        </div>
+        <div id="videoStrip" class="video-strip" hidden></div>
+        <p class="panel-note" id="frameNote" hidden>视频已自动选取最清晰的帧，点击缩略图可更换重建帧。</p>
+      </div>
+
+      <div class="panel">
+        <div class="panel-title">点云参数 <span class="title-note">调整即时生效</span></div>
+        <div class="ctrl">
+          <label for="qualitySeg">重建分辨率</label>
+          <div class="seg" id="qualitySeg" role="radiogroup" aria-label="重建分辨率">
+            <button class="seg-btn" data-v="384">流畅</button>
+            <button class="seg-btn is-active" data-v="512">均衡</button>
+            <button class="seg-btn" data-v="640">高清</button>
+          </div>
+          <p class="ctrl-note" id="qualityNote">切换后会重新推理深度</p>
+        </div>
+        <div class="ctrl">
+          <label for="strengthRange">深度强度 <output id="strengthOut">0.45</output></label>
+          <input type="range" id="strengthRange" min="0.1" max="1.2" step="0.05" value="0.45">
+        </div>
+        <div class="ctrl">
+          <label for="sizeRange">泼溅大小 <output id="sizeOut">1.00</output></label>
+          <input type="range" id="sizeRange" min="0.4" max="2" step="0.05" value="1">
+        </div>
+        <div class="ctrl ctrl-row">
+          <label for="invertChk">反转深度（前景 / 背景对调）</label>
+          <input type="checkbox" id="invertChk">
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-title">导出</div>
+        <div class="export-grid">
+          <button class="btn btn-acc" id="exportPly" disabled>导出 .ply 点云</button>
+          <button class="btn btn-acc" id="exportSplat" disabled>导出 .splat</button>
+          <button class="btn btn-ghost" id="exportDepth" disabled>深度图 PNG</button>
+        </div>
+        <p class="panel-note">.splat 可直接拖入 SuperSplat 或 splat viewer 查看；.ply 兼容 Blender / CloudCompare。</p>
+      </div>
+
+      <button class="btn btn-ghost change-file" id="changeFileBtn">换一个文件</button>
+    </aside>
+
+    <div class="ws-right">
+      <div id="viewport" class="viewport">
+        <div id="statusPill" class="status-pill"><span class="spinner" hidden></span><span id="statusText">等待输入…</span></div>
+        <div class="vp-toolbar">
+          <button id="autoOrbitBtn" class="vp-btn is-active" title="自动环绕">环绕</button>
+          <button id="resetViewBtn" class="vp-btn" title="重置视角">复位</button>
+          <button id="shotBtn" class="vp-btn" title="保存当前视角截图">截图</button>
+        </div>
+        <div id="cloudInfo" class="vp-info"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 原理与说明 ============ -->
+  <section class="about">
+    <h2>它是怎么工作的</h2>
+    <div class="about-grid">
+      <div class="about-item">
+        <h4>① 深度推理（本地）</h4>
+        <p>页面通过 transformers.js 加载随站点自托管的 Depth Anything V2 单目深度模型：有 WebGPU 时以 fp16 运行，否则回退到 int8 量化 + WASM。输入图会被缩放到最长边 384 / 512 / 640 再推理。</p>
+      </div>
+      <div class="about-item">
+        <h4>② 像素 → 泼溅</h4>
+        <p>深度做 2%–98% 分位归一化后映射为 Z 轴高度；每个像素成为一枚带原图颜色的高斯圆盘，尺寸随深度梯度收缩（边缘更锐利），位置加确定性抖动以消除网格感。</p>
+      </div>
+      <div class="about-item">
+        <h4>③ 视频帧选取</h4>
+        <p>视频会均匀抽取 16 帧，用拉普拉斯方差自动挑选最清晰的一帧参与重建，也可以手动点选任意一帧。环绕拍摄的视频选物体正对镜头的帧效果最好。</p>
+      </div>
+      <div class="about-item">
+        <h4>隐私</h4>
+        <p>模型加载后，所有计算——推理、点云构建、导出——都发生在你的浏览器标签页里。图片和视频不会离开你的设备，站点也没有任何后端。</p>
+      </div>
+    </div>
+    <p class="about-limit">
+      <strong>诚实的边界：</strong>单视角重建本质是 2.5D——它生成的是「正面 + 深度浮雕」，被遮挡的背面无法凭空还原；
+      完整的多视角 3D 高斯泼溅需要多角度照片与 GPU 训练（如 nerfstudio、Postshot）。本站适合快速预览、浮雕艺术与 3D 素材起步。
+    </p>
+  </section>
+</main>
+
+<footer class="site-footer">
+  <span>Image2Splat · 纯浏览器端生成 · 模型与依赖全自托管</span>
+  <span class="foot-links">
+    <a href="https://github.com/ForJiang/image-to-splat" target="_blank" rel="noopener">GitHub</a>
+    <a href="https://depth-anything-v2.github.io/" target="_blank" rel="noopener">Depth Anything V2</a>
+    <a href="https://threejs.org" target="_blank" rel="noopener">three.js</a>
+  </span>
+</footer>
+
+<div id="toast" class="toast" hidden></div>
+
+<script type="module" src="js/main.js"></script>
+</body>
+</html>
