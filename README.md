@@ -26,6 +26,7 @@ English intro at the bottom: [English](#english)
 | 移动端稳定 | 背景画布尺寸稳定捕获 + 独立合成层，滚动时背景钉住不滑不抖；毛玻璃效果按屏幕宽度降级，保证滚动流畅 |
 | 隐私优先 | 无任何上传代码，模型加载后断网也能用；无日志、无追踪 |
 | 真正静态 | 无构建、无依赖安装，GitHub Pages 直接发布；模型与依赖全部自托管，不请求任何第三方域名 |
+| 首屏轻载 | three.js 与深度模型均按需懒加载：首屏资源约 60KB，渲染库不进关键路径；拖文件后视口模块与推理并行下载，空闲 3 秒或首次交互时预热，二次访问模型直接命中缓存 |
 
 ## 界面预览
 
@@ -48,10 +49,10 @@ English intro at the bottom: [English](#english)
 | --- | --- |
 | `assets/js/depth.js` | transformers.js 加载自托管模型（禁用远端回退），WebGPU/WASM 双后端自动降级，聚合下载进度 |
 | `assets/js/splat.js` | 深度归一化、梯度计算、逐像素生成泼溅（位置 / 颜色 / 尺寸三组属性） |
-| `assets/js/viewer.js` | three.js 场景与自定义泼溅着色器，轨道控制、自动环绕、像素级截图 |
+| `assets/js/viewer.js` | three.js 场景与自定义泼溅着色器，轨道控制、自动环绕、像素级截图（由 main.js 动态 import，three.js 不占首屏） |
 | `assets/js/video.js` | 双路径抽帧：按时长 seek（先修分片视频的 `Infinity` 时长），失败降级 `requestVideoFrameCallback` 播放采样 |
 | `assets/js/exporter.js` | 二进制 PLY（binary_little_endian）与 32 字节/点 .splat（体积降序）编码 |
-| `assets/js/main.js` | 状态机与事件接线：文件入口、推理、重建、交互/导出 |
+| `assets/js/main.js` | 状态机与事件接线：文件入口、推理、重建、交互/导出；视口模块懒加载与预热 |
 | `assets/js/wave-bg.js` | 正弦波线条背景（原生 WebGL1，uniforms 与参考组件一致） |
 | `assets/js/i18n.js` | 中英双语文案 |
 | `assets/js/reveal.js` | 卡片入场动画：滚动揭示（时间戳节流 + 400ms 轮询兜底，不依赖 IntersectionObserver / rAF） |
@@ -91,6 +92,7 @@ python3 -m http.server 8000
 - **Debug**: `?mock=1` replaces the model with a synthetic depth map (offline pipeline check)
 - **Pipeline**: decode; Depth Anything V2 (WebGPU fp16 / WASM q8, self-hosted ONnx); percentile-normalized depth; one gaussian disc per pixel; custom three.js Points shader; export `.ply` / `.splat`
 - **Design**: same dark-glass system as [image-metadata-cleaner](https://forjiang.github.io/image-metadata-cleaner/) — 60px topbar, WebGL sine-wave background, reveal animations, zh/en i18n
+- **Performance**: ~60KB first paint; three.js is dynamically imported and never sits in the critical path, and the depth model is fetched on first drop — the viewer module warms up 3s after load (or on first interaction) so the first rebuild starts with everything already in flight
 
 ## License
 
