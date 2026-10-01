@@ -15,7 +15,7 @@
 <meta property="og:description" content="把一张图片或一段视频变成可旋转的 3D 高斯泼溅点云。100% 浏览器本地推理，文件不上传，可导出 .ply / .splat。" />
 <!-- 主图标用内联 data URI：favicon 缓存很顽固，内联可保证每次加载都拿到当前设计（与 image-metadata-cleaner 同方案） -->
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Cdefs%3E%3ClinearGradient id='b' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%232a2c33'/%3E%3Cstop offset='1' stop-color='%23101114'/%3E%3C/linearGradient%3E%3CradialGradient id='g' cx='35%25' cy='35%25' r='80%25'%3E%3Cstop offset='0' stop-color='%23f2f3f6'/%3E%3Cstop offset='1' stop-color='%239aa0aa'/%3E%3C/radialGradient%3E%3C/defs%3E%3Crect width='64' height='64' rx='14' fill='url(%23b)'/%3E%3Ccircle cx='32' cy='32' r='13' fill='url(%23g)'/%3E%3Ccircle cx='17' cy='46' r='4.5' fill='%239aa0aa'/%3E%3Ccircle cx='47' cy='17' r='3.5' fill='%23c9ced8'/%3E%3C/svg%3E" />
-<link rel="stylesheet" href="assets/css/style.css?v=3" />
+<link rel="stylesheet" href="assets/css/style.css?v=4" />
 <script type="importmap">
 {
   "imports": {
@@ -59,8 +59,8 @@
         </svg>
       </span>
       <h3 data-i18n="drop.title">拖入图片或视频，或点击选择</h3>
-      <p data-i18n="drop.sub">视频会自动挑最清晰的帧；首次使用需下载约 50 MB 模型，之后有缓存</p>
-      <input type="file" id="fileInput" accept="image/*,video/*" hidden />
+      <p data-i18n="drop.sub">视频会自动挑最清晰的帧；拖入多张同物体的照片，可重建完整 3D 模型。首次使用需下载约 50 MB 模型，之后有缓存</p>
+      <input type="file" id="fileInput" accept="image/*,video/*" multiple hidden />
     </div>
 
     <div class="options">
@@ -113,6 +113,19 @@
       <button class="btn-icon sample-btn" data-src="assets/sample-alley.jpg" type="button" data-i18n="source.sampleAlley">夜巷</button>
     </p>
 
+    <div class="views" id="viewsPanel" hidden>
+      <div class="list-head">
+        <h2 data-i18n="views.title">多图视图</h2>
+        <span class="count" id="viewsCount"></span>
+      </div>
+      <div class="views-list" id="viewsList"></div>
+      <p class="views-note" id="viewsNote" data-i18n="views.hint">建议 8–12 张：围绕同一物体环绕拍摄，相邻照片保持 60% 以上重叠。</p>
+      <div class="actions">
+        <button class="btn btn-primary" id="mvBuildBtn" type="button" disabled data-i18n="views.build">重建 3D 模型</button>
+        <button class="btn btn-ghost" id="viewsClearBtn" type="button" data-i18n="views.clear">清空视图</button>
+      </div>
+    </div>
+
     <div class="list-head" id="sourceHead" hidden>
       <h2 data-i18n="source.title">源与深度</h2>
       <span class="count" id="sourceCount"></span>
@@ -143,9 +156,9 @@
   </section>
 
   <section class="panel summary" id="summary" data-reveal hidden>
-    <div class="stat"><b id="statSplats">0</b><span data-i18n="summary.splats">泼溅数量</span></div>
-    <div class="stat"><b id="statInfer">0s</b><span data-i18n="summary.infer">推理耗时</span></div>
-    <div class="stat"><b id="statBuild">0ms</b><span data-i18n="summary.build">重建耗时</span></div>
+    <div class="stat"><b id="statSplats">0</b><span id="statSplatsL" data-i18n="summary.splats">泼溅数量</span></div>
+    <div class="stat"><b id="statInfer">0s</b><span id="statInferL" data-i18n="summary.infer">推理耗时</span></div>
+    <div class="stat"><b id="statBuild">0ms</b><span id="statBuildL" data-i18n="summary.build">重建耗时</span></div>
   </section>
 
   <section class="faq" data-reveal>
@@ -170,6 +183,10 @@
       <summary><span data-i18n="faq.q5">导出的 .ply / .splat 怎么用？</span></summary>
       <p data-i18n="faq.a5"></p>
     </details>
+    <details data-reveal>
+      <summary><span data-i18n="faq.q6">多图模式怎么拍效果最好？</span></summary>
+      <p data-i18n="faq.a6"></p>
+    </details>
   </section>
 </main>
 
@@ -184,6 +201,6 @@
   <div style="text-align:center;padding:24px;color:#f2f3f6">本工具需要在浏览器中启用 JavaScript。</div>
 </noscript>
 
-<script type="module" src="assets/js/main.js?v=3"></script>
+<script type="module" src="assets/js/main.js?v=5"></script>
 </body>
 </html>

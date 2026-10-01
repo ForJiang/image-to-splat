@@ -1,0 +1,527 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<title>SfM 调试 · Image2Splat</title>
+<style>
+  body { font: 13px/1.6 ui-monospace, Menlo, monospace; background: #101014; color: #e8ebf1; margin: 0; padding: 16px; }
+  h2 { font-size: 14px; }
+  #views { display: flex; gap: 6px; flex-wrap: wrap; margin: 8px 0; }
+  #views canvas { width: 160px; border: 1px solid #333; }
+  button { font: inherit; padding: 6px 14px; margin-right: 8px; cursor: pointer; }
+  #out { white-space: pre-wrap; background: #0a0a0c; border: 1px solid #2a2c33; border-radius: 8px; padding: 12px; min-height: 300px; }
+</style>
+</head>
+<body>
+<h2>SfM 逐层诊断（three.js 拟真场景：16 视角环绕，纹理 / 光照 / 抗锯齿）</h2>
+<div>
+  <button id="chainBtn">0) 分层自检（GT 对应）</button>
+  <button id="detectBtn">1) 检测+匹配统计</button>
+  <button id="relBtn">2) 相对位姿（0→1）</button>
+  <button id="fullBtn">3) 完整 estimateStructure</button>
+</div>
+<div id="views"></div>
+<div id="out">就绪</div>
+<script type="module">
+import * as S from '../assets/js/sfm.js';
+import * as THREE from '../vendor/three/three.module.min.js';
+const { __debug } = S;
+const out = document.getElementById('out');
+const log = (...a) => { out.textContent += '\n' + a.map(x => typeof x === 'object' ? JSON.stringify(x, (k, v) => typeof v === 'number' ? +v.toFixed(4) : v) : String(x)).join(' '); };
+
+/* ============ 拟真场景：three.js 离屏渲染多个视角 ============ */
+// 32 视角、步进 11.25°：相邻对透视畸变小、匹配数量与精度都上去
+// （22.5° 步进下部分相邻对只剩 15 对匹配、精度 45%，RANSAC 直接饿死）。
+const W = 512, H = 384, N = 32;
+const sub = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+const norm = v => { const l = Math.hypot(...v) || 1; return [v[0] / l, v[1] / l, v[2] / l]; };
+const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+// lookAt：相机 +Z 朝目标、+Y 朝 up。渲染是 three 的（+Y 朝上），
+// 所以传 up=[0,-1,0] 让 GT 与渲染出的图像方向一致（相当于对世界做了上下翻转）。
+const lookAt = (C, target, up) => {
+  const fwd = norm(sub(target, C));
+  const right = norm(cross(fwd, up));
+  const up2 = cross(right, fwd);
+  return { R: [right[0], right[1], right[2], up2[0], up2[1], up2[2], fwd[0], fwd[1], fwd[2]], C };
+};
+const xform = (R, C, p) => { const d = sub(p, C); return [R[0] * d[0] + R[1] * d[1] + R[2] * d[2], R[3] * d[0] + R[4] * d[1] + R[5] * d[2], R[6] * d[0] + R[7] * d[1] + R[8] * d[2]]; };
+const f = W / (2 * Math.tan(Math.PI / 6));
+const project = (gtv, p) => { const Xc = xform(gtv.R, gtv.C, p); if (Xc[2] <= 0.05) return null; return [f * Xc[0] / Xc[2] + W / 2, f * Xc[1] / Xc[2] + H / 2]; };
+
+// 程序纹理：文字 + 不规则形状 + 噪点（多尺度高频细节，接近真实拍摄对象）。
+// 避开规则网格/重复图案——周期纹理会产生系统性错配（网格交点互为假对应，
+// RANSAC 会被虚假共识带到错误模型）。盒子和圆柱各用独立纹理。
+const mkTex = (draw) => {
+  const cv = document.createElement('canvas'); cv.width = 512; cv.height = 512;
+  draw(cv.getContext('2d'));
+  const t = new THREE.CanvasTexture(cv);
+  t.colorSpace = THREE.SRGBColorSpace;
+  t.anisotropy = 4;
+  return t;
+};
+let tsd = 2024;
+const trnd = () => { tsd = (tsd * 1103515245 + 12345) % 2147483648; return tsd / 2147483648; };
+const texText = mkTex(ctx => {
+  ctx.fillStyle = '#d9dde6'; ctx.fillRect(0, 0, 512, 512);
+  ctx.fillStyle = '#232833';
+  for (let i = 0; i < 46; i++) {
+    ctx.font = `${11 + (i % 4) * 7}px ui-monospace, monospace`;
+    ctx.fillText('Image2Splat ' + (i * 37 % 100) + ' 多视角', (i * 83) % 380, 24 + (i * 47) % 470);
+  }
+  ctx.strokeStyle = '#3b4252'; ctx.lineWidth = 2;
+  for (let i = 0; i < 14; i++) { ctx.beginPath(); ctx.arc(trnd() * 512, trnd() * 512, 8 + trnd() * 26, 0, 7); ctx.stroke(); }
+});
+const texMark = mkTex(ctx => {
+  ctx.fillStyle = '#b8c4d4'; ctx.fillRect(0, 0, 512, 512);
+  for (let i = 0; i < 220; i++) {
+    const x = trnd() * 512, y = trnd() * 512, r = 3 + trnd() * 9;
+    ctx.fillStyle = `rgb(${40 + trnd() * 170 | 0},${40 + trnd() * 170 | 0},${40 + trnd() * 170 | 0})`;
+    const t = Math.floor(trnd() * 3);
+    if (t === 0) { ctx.beginPath(); ctx.arc(x, y, r, 0, 7); ctx.fill(); }
+    else if (t === 1) { ctx.fillRect(x - r, y - r * 0.3, r * 2, r * 0.6); ctx.fillRect(x - r * 0.3, y - r, r * 0.6, r * 2); }
+    else { ctx.beginPath(); ctx.moveTo(x, y - r); ctx.lineTo(x + r, y + r); ctx.lineTo(x - r, y + r); ctx.closePath(); ctx.fill(); }
+  }
+  ctx.strokeStyle = '#2c313c'; ctx.lineWidth = 3;
+  for (let i = 0; i < 8; i++) { ctx.beginPath(); ctx.moveTo(trnd() * 512, trnd() * 512); ctx.lineTo(trnd() * 512, trnd() * 512); ctx.stroke(); }
+});
+const texGround = mkTex(ctx => {
+  ctx.fillStyle = '#5a6472'; ctx.fillRect(0, 0, 512, 512);
+  // 不规则斑块 + 散点，没有任何周期结构
+  for (let i = 0; i < 60; i++) {
+    ctx.fillStyle = `rgba(${30 + trnd() * 120 | 0},${35 + trnd() * 120 | 0},${45 + trnd() * 110 | 0},0.85)`;
+    ctx.beginPath();
+    const cx = trnd() * 512, cy = trnd() * 512, r = 14 + trnd() * 46;
+    for (let k = 0; k <= 10; k++) {
+      const a = (k / 10) * Math.PI * 2, rr = r * (0.7 + trnd() * 0.6);
+      const px = cx + Math.cos(a) * rr, py = cy + Math.sin(a) * rr;
+      k === 0 ? ctx.moveTo(px, py) : ctx.lineTo(px, py);
+    }
+    ctx.closePath(); ctx.fill();
+  }
+  for (let i = 0; i < 260; i++) {
+    ctx.fillStyle = `rgb(${70 + trnd() * 90 | 0},${70 + trnd() * 90 | 0},${70 + trnd() * 90 | 0})`;
+    ctx.fillRect(trnd() * 512, trnd() * 512, 2 + trnd() * 7, 2 + trnd() * 7);
+  }
+});
+// 圆柱专用纹理——每个物体必须用互不相同的纹理，跨物体共用会产生
+// 几何上错误的假对应（地面↔圆柱的特征互为最近邻）。
+const texCyl = mkTex(ctx => {
+  ctx.fillStyle = '#8e9bb0'; ctx.fillRect(0, 0, 512, 512);
+  ctx.strokeStyle = '#2a3040'; ctx.lineWidth = 2.5;
+  for (let i = 0; i < 26; i++) {
+    ctx.beginPath();
+    ctx.moveTo(trnd() * 512, trnd() * 512);
+    ctx.bezierCurveTo(trnd() * 512, trnd() * 512, trnd() * 512, trnd() * 512, trnd() * 512, trnd() * 512);
+    ctx.stroke();
+  }
+  ctx.fillStyle = '#e8ecf4';
+  for (let i = 0; i < 40; i++) {
+    ctx.font = `${13 + (i % 3) * 6}px ui-monospace, monospace`;
+    ctx.fillText(String.fromCharCode(65 + i % 26) + (i * 13 % 97), (i * 71) % 400, 30 + (i * 53) % 460);
+  }
+});
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(W, H, false);
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x1a1e26);
+scene.add(new THREE.AmbientLight(0xffffff, 0.5));
+const sun = new THREE.DirectionalLight(0xfff2e0, 1.7); sun.position.set(5, 9, 6); scene.add(sun);
+const fill = new THREE.DirectionalLight(0x8fb4ff, 0.55); fill.position.set(-7, 4, -5); scene.add(fill);
+
+const box1 = new THREE.Mesh(new THREE.BoxGeometry(2.4, 2.4, 2.4), new THREE.MeshStandardMaterial({ map: texText, roughness: 0.85 }));
+const box2 = new THREE.Mesh(new THREE.BoxGeometry(1.7, 1.7, 1.7), new THREE.MeshStandardMaterial({ map: texMark, roughness: 0.7 }));
+box2.position.set(-2.3, -0.5, -1.1);
+const cyl = new THREE.Mesh(new THREE.CylinderGeometry(0.55, 0.55, 2.1, 24), new THREE.MeshStandardMaterial({ map: texCyl, roughness: 0.6 }));
+cyl.position.set(2.1, -0.4, 1.2);
+const ground = new THREE.Mesh(new THREE.PlaneGeometry(40, 40), new THREE.MeshStandardMaterial({ map: texGround, roughness: 1 }));
+ground.rotation.x = -Math.PI / 2; ground.position.y = -1.55;
+scene.add(box1, box2, cyl, ground);
+
+const views = [], gt = [], gtCheck = [];
+{
+  const cam = new THREE.PerspectiveCamera(2 * Math.atan((H / 2) / f) * 180 / Math.PI, W / H, 0.1, 100);
+  // three 的 fov 是垂直视场；管线假设水平视场 60°（f = W/(2·tan30°)）。
+  // 若直接用 60° 当 fov，真实焦距是 H/(2·tan30°)——K 差 1.333 倍，E 全崩。
+  const rt = new THREE.WebGLRenderTarget(W, H);
+  const buf = new Uint8Array(W * H * 4);
+  for (let k = 0; k < N; k++) {
+    const a = (k / N) * Math.PI * 2;
+    const C = [Math.sin(a) * 6.5, 2.0, Math.cos(a) * 6.5];
+    // 标准针孔约定：相机系 = (右, 下, 前)，与 three 渲染出的图像逐像素一致
+    // （three 的 y 轴朝上，图像 v 轴朝下，取 -up 行）。左手系 (右,上,前) 会让
+    // GT 与图像差一个翻转，本质矩阵结构直接崩掉。
+    const g0v = lookAt(C, [0, -0.1, 0], [0, 1, 0]);
+    const gtv = { R: [g0v.R[0], g0v.R[1], g0v.R[2], -g0v.R[3], -g0v.R[4], -g0v.R[5], g0v.R[6], g0v.R[7], g0v.R[8]], C };
+    gt.push(gtv);
+    cam.position.set(C[0], C[1], C[2]);
+    cam.lookAt(0, -0.1, 0);
+    cam.updateMatrixWorld();
+    // 从 matrixWorld 提取 three 的相机基（列 = 相机 x/y/z 轴在世界中的方向），
+    // 与我的 GT 对比：验证 GT 约定和渲染结果一致
+    const e = cam.matrixWorld.elements;
+    gtCheck.push({
+      mine: gtv.R,
+      fromThree: [e[0], e[4], e[8], -e[1], -e[5], -e[9], -e[2], -e[6], -e[10]],
+    });
+    renderer.setRenderTarget(rt);
+    renderer.render(scene, cam);
+    renderer.readRenderTargetPixels(rt, 0, 0, W, H, buf);
+    const cv = document.createElement('canvas'); cv.width = W; cv.height = H;
+    const ctx = cv.getContext('2d');
+    const img = ctx.createImageData(W, H);
+    for (let y = 0; y < H; y++) { // WebGL 渲染目标原点在左下，翻转到图像坐标
+      const src = (H - 1 - y) * W * 4, dst = y * W * 4;
+      for (let x = 0; x < W * 4; x++) img.data[dst + x] = buf[src + x];
+    }
+    ctx.putImageData(img, 0, 0);
+    views.push(cv);
+    document.getElementById('views').appendChild(cv);
+  }
+  renderer.setRenderTarget(null);
+}
+// GT 与 three 相机矩阵的最大偏差（应 ~1e-6）
+window.__gtErr = Math.max(...gtCheck.flatMap(c => c.mine.map((v, i) => Math.abs(v - c.fromThree[i]))));
+window.__views = views;
+window.__gt = { gt, f, N };
+
+const Karr = [f, 0, W / 2, 0, f, H / 2, 0, 0, 1];
+const feats = () => views.map(v => __debug.detectFeatures(v));
+
+// GT 相对位姿（约定与 sfm.js 的 triangulateDLT 一致：X_cam_b = R·X_cam_a + t）
+const gtRel = (a, b) => {
+  const A = gt[b].R, B = gt[a].R;
+  const Bt = [B[0], B[3], B[6], B[1], B[4], B[7], B[2], B[5], B[8]];
+  const R = new Array(9);
+  for (let i = 0; i < 3; i++) for (let j = 0; j < 3; j++) R[i * 3 + j] = A[i * 3] * Bt[j] + A[i * 3 + 1] * Bt[3 + j] + A[i * 3 + 2] * Bt[6 + j];
+  const Ca = gt[a].C, Cb = gt[b].C;
+  const d = [Ca[0] - Cb[0], Ca[1] - Cb[1], Ca[2] - Cb[2]];
+  const t = [A[0] * d[0] + A[1] * d[1] + A[2] * d[2], A[3] * d[0] + A[4] * d[1] + A[5] * d[2], A[6] * d[0] + A[7] * d[1] + A[8] * d[2]];
+  return { R, t };
+};
+const matmul = (A, B) => { const C = new Array(9); for (let i = 0; i < 3; i++) for (let j = 0; j < 3; j++) C[i * 3 + j] = A[i * 3] * B[j] + A[i * 3 + 1] * B[3 + j] + A[i * 3 + 2] * B[6 + j]; return C; };
+const skew = t => [0, -t[2], t[1], t[2], 0, -t[0], -t[1], t[0], 0];
+const fro = M => Math.sqrt(M.reduce((s, v) => s + v * v, 0));
+const ln = v => Math.hypot(v[0], v[1], v[2]); // 标量长度（模块里的 norm 返回单位向量数组，别混用）
+
+// GT 一一对应点（网格铺开、非共面）：用于分层自检，不依赖渲染图像
+const gtPairs = (a, b) => {
+  const p1 = [], p2 = [];
+  for (let x = -3; x <= 3; x += 0.8) for (let y = -2; y <= 3; y += 0.8) for (let z = -3; z <= 3; z += 0.8) {
+    const u = project(gt[a], [x, y, z]), v = project(gt[b], [x, y, z]);
+    if (u && v) { p1.push(u); p2.push(v); }
+  }
+  return { p1, p2 };
+};
+
+document.getElementById('chainBtn').onclick = async () => {
+  out.textContent = '';
+  const rel = gtRel(0, 1);
+  const Egt = matmul(skew(rel.t.map(v => v / ln(rel.t))), rel.R); // [t̂]×·R，t 已单位化
+
+  // T1: jacobiEigen 随机对称矩阵
+  let sd = 7;
+  const rr = () => { sd = (sd * 1103515245 + 12345) % 2147483648; return sd / 2147483648; };
+  const S4 = new Array(16);
+  for (let i = 0; i < 4; i++) for (let j = 0; j < 4; j++) S4[i * 4 + j] = i <= j ? rr() * 4 + 1 : S4[j * 4 + i];
+  const V4 = __debug.jacobiEigen(S4, 4);
+  let maxRes = 0, maxOrth = 0;
+  for (let k = 0; k < 4; k++) {
+    const vk = [V4[k], V4[4 + k], V4[8 + k], V4[12 + k]];
+    const Av = [0, 1, 2, 3].map(i => S4[i * 4] * vk[0] + S4[i * 4 + 1] * vk[1] + S4[i * 4 + 2] * vk[2] + S4[i * 4 + 3] * vk[3]);
+    const lam = vk.reduce((s, v, i) => s + v * Av[i], 0);
+    maxRes = Math.max(maxRes, Math.max(...Av.map((v, i) => Math.abs(v - lam * vk[i]))));
+    for (let m = k + 1; m < 4; m++) {
+      const vm = [V4[m], V4[4 + m], V4[8 + m], V4[12 + m]];
+      maxOrth = Math.max(maxOrth, Math.abs(vk.reduce((s, v, i) => s + v * vm[i], 0)));
+    }
+  }
+  log('T1 jacobiEigen: 残差', maxRes.toExponential(2), '正交', maxOrth.toExponential(2), maxRes < 1e-8 && maxOrth < 1e-8 ? 'PASS' : 'FAIL');
+
+  // T2: estimateFundamental 对全部 GT 对应点的残差（非共面配置）
+  // 阈值 1e-2：9×9 AtA 条件数极高，零特征向量精度约 ε·||A||，绝对残差 ~1e-3
+  // 属正常数值现象；相对 ~500 的像素坐标是 1e-5 量级，RANSAC 阈值是 1.5px
+  const { p1, p2 } = gtPairs(0, 1);
+  const F2 = __debug.estimateFundamental(p1, p2);
+  let res2 = 0;
+  for (let i = 0; i < p1.length; i++) {
+    const x1 = [p1[i][0], p1[i][1], 1], x2 = [p2[i][0], p2[i][1], 1];
+    res2 += Math.abs(x2[0] * (F2[0] * x1[0] + F2[1] * x1[1] + F2[2]) + x2[1] * (F2[3] * x1[0] + F2[4] * x1[1] + F2[5]) + (F2[6] * x1[0] + F2[7] * x1[1] + F2[8]));
+  }
+  log('T2 estimateFundamental:', p1.length, '点 | 残差均值', (res2 / p1.length).toExponential(2), res2 / p1.length < 1e-2 ? 'PASS' : 'FAIL');
+
+  // T3b: 用 GT 本质矩阵反推 F_true = K⁻ᵀ·E·K⁻¹，分清是 F 求解器还是 E 转换的问题
+  const Km = [Karr[0], 0, Karr[2], 0, Karr[0], Karr[5], 0, 0, 1];
+  const Kinv = [1 / Km[0], 0, -Km[2] / Km[0], 0, 1 / Km[0], -Km[5] / Km[0], 0, 0, 1];
+  const KinvT = [Kinv[0], Kinv[3], Kinv[6], Kinv[1], Kinv[4], Kinv[7], Kinv[2], Kinv[5], Kinv[8]];
+  const Ftrue = matmul(matmul(KinvT, Egt), Kinv);
+  let resT = 0;
+  for (let i = 0; i < p1.length; i++) {
+    const x1 = [p1[i][0], p1[i][1], 1], x2 = [p2[i][0], p2[i][1], 1];
+    resT += Math.abs(x2[0] * (Ftrue[0] * x1[0] + Ftrue[1] * x1[1] + Ftrue[2]) + x2[1] * (Ftrue[3] * x1[0] + Ftrue[4] * x1[1] + Ftrue[5]) + (Ftrue[6] * x1[0] + Ftrue[7] * x1[1] + Ftrue[8]));
+  }
+  const E3b = __debug.essentialFromF(Ftrue, Karr);
+  const scB = E3b.reduce((s, v, i) => s + v * Egt[i], 0) / (fro(Egt) * fro(Egt));
+  const err3b = Math.max(...E3b.map((v, i) => Math.abs(v - scB * Egt[i])));
+  log('T3b F_true 残差均值', (resT / p1.length).toExponential(2), '| essentialFromF(F_true) vs GT: 缩放', scB.toFixed(3), '最大偏差', err3b.toExponential(2), err3b < 1e-6 ? 'PASS' : 'FAIL');
+
+  // T4: decomposeEssential(E_gt) 能否还原 (R, t̂)
+  const cands = __debug.decomposeEssential(Egt.map(v => v * 3.7));
+  let best4 = null;
+  for (const c of cands) {
+    const dR = Math.max(...c.R.map((v, i) => Math.abs(v - rel.R[i])));
+    const nct = ln(c.t), nrt = ln(rel.t);
+    const dt = ln([c.t[0] / nct - rel.t[0] / nrt, c.t[1] / nct - rel.t[1] / nrt, c.t[2] / nct - rel.t[2] / nrt]);
+    const dtm = ln([c.t[0] / nct + rel.t[0] / nrt, c.t[1] / nct + rel.t[1] / nrt, c.t[2] / nct + rel.t[2] / nrt]);
+    const d = dR + Math.min(dt, dtm);
+    if (!best4 || d < best4.d) best4 = { d, dR, dt: Math.min(dt, dtm), R: c.R, t: c.t };
+  }
+  log('T4 decomposeEssential: ΔR', best4.dR.toExponential(2), 'Δt̂', best4.dt.toExponential(2), best4.d < 1e-6 ? 'PASS' : 'FAIL');
+
+  // T8: triangulateDLT 单元测试——已知 R= I、t=[1,0,0]，点 P=[0.5,0.2,5]，
+  // 投影到两个相机再三角化，应还原 P
+  {
+    const R8 = [1, 0, 0, 0, 1, 0, 0, 0, 1], t8 = [1, 0, 0];
+    const P8 = [0.5, 0.2, 5];
+    const uv1 = [Karr[0] * P8[0] / P8[2] + Karr[2], Karr[0] * P8[1] / P8[2] + Karr[5]];
+    const P2 = [P8[0] + t8[0], P8[1] + t8[1], P8[2] + t8[2]];
+    const uv2 = [Karr[0] * P2[0] / P2[2] + Karr[2], Karr[0] * P2[1] / P2[2] + Karr[5]];
+    const X8 = __debug.triangulateDLT(R8, t8, uv1, uv2, Karr[0], [Karr[2], Karr[5]]);
+    const err8 = X8 ? Math.hypot(X8[0] - P8[0], X8[1] - P8[1], X8[2] - P8[2]) : -1;
+    log('T8 triangulateDLT 单测: 还原', X8 ? X8.map(v => +v.toFixed(3)) : 'null', '| 误差', err8.toFixed(4), err8 < 1e-3 ? 'PASS' : 'FAIL');
+  }
+
+  // T5: estimateRelativeMotion 全链路（GT 对应点）
+  const t0 = performance.now();
+  const rel5 = __debug.estimateRelativeMotion(p1, p2, Karr);
+  log('T5 estimateRelativeMotion:', Math.round(performance.now() - t0), 'ms');
+  if (!rel5) { log('   失败 FAIL'); return; }
+  const inl = rel5.inliers.reduce((s, x) => s + x, 0);
+  const dR5 = Math.max(...rel5.R.map((v, i) => Math.abs(v - rel.R[i])));
+  const nt = ln(rel5.t);
+  const cos5 = (rel5.t[0] * rel.t[0] + rel5.t[1] * rel.t[1] + rel5.t[2] * rel.t[2]) / (nt * ln(rel.t));
+  log('   内联', inl, '/', p1.length, '| ΔR', dR5.toExponential(2), '| cos(t̂)', cos5.toFixed(4), dR5 < 1e-3 && cos5 > 0.99 ? 'PASS' : 'FAIL');
+};
+
+document.getElementById('detectBtn').onclick = () => {
+  out.textContent = '';
+  const F = feats();
+  log('检测：', F.map(x => x.pts.length).join(', '), '（每视图特征数）');
+  const rel01 = gtRel(0, 1);
+  const Km = [Karr[0], 0, Karr[2], 0, Karr[0], Karr[5], 0, 0, 1];
+  const Kinv = [1 / Km[0], 0, -Km[2] / Km[0], 0, 1 / Km[0], -Km[5] / Km[0], 0, 0, 1];
+  const KinvT = [Kinv[0], Kinv[3], Kinv[6], Kinv[1], Kinv[4], Kinv[7], Kinv[2], Kinv[5], Kinv[8]];
+  const Fgt = matmul(matmul(KinvT, matmul(skew(rel01.t.map(v => v / ln(rel01.t))), rel01.R)), Kinv);
+  for (const [i, j] of [[0, 1], [1, 2], [5, 6]]) {
+    const pairs = __debug.matchDescriptors(F[i].desc, F[j].desc);
+    let ok = 0;
+    const dists = [];
+    for (const p of pairs) {
+      const d = __debug.sampson(Fgt, F[i].pts[p[0]], F[j].pts[p[1]]);
+      dists.push(d);
+      if (d < 1.5) ok++;
+    }
+    dists.sort((x, y) => x - y);
+    // 按描述子距离排序后，前一半/前16对的真匹配浓度（RANSAC 质量偏置采样的依据）
+    const byD = pairs.slice().sort((a, b) => a[2] - b[2]);
+    const topHalf = byD.slice(0, Math.floor(byD.length / 2));
+    const top16 = byD.slice(0, 16);
+    const pHalf = topHalf.filter(p => __debug.sampson(Fgt, F[i].pts[p[0]], F[j].pts[p[1]]) < 1.5).length;
+    const p16 = top16.filter(p => __debug.sampson(Fgt, F[i].pts[p[0]], F[j].pts[p[1]]) < 1.5).length;
+    log(`匹配 ${i}→${j}:`, pairs.length, '对 | 对极内联', ok, `(${pairs.length ? (100 * ok / pairs.length).toFixed(0) : 0}%)`, '| Sampson 中位数', dists.length ? dists[dists.length >> 1].toFixed(1) : '-');
+    log(`   按距离前一半真匹配 ${pHalf}/${topHalf.length}，前16对 ${p16}/${top16.length}`);
+    if (i === 1 && j === 2) {
+      // 只用真匹配（GT 对极内联）喂相对位姿，逐步定位卡点
+      const tru = pairs.filter(p => __debug.sampson(Fgt, F[i].pts[p[0]], F[j].pts[p[1]]) < 1.5);
+      const q1 = tru.map(p => F[i].pts[p[0]]), q2 = tru.map(p => F[j].pts[p[1]]);
+      const rq = tru.length >= 8 ? __debug.estimateRelativeMotion(q1, q2, Karr) : null;
+      const Fr = __debug.estimateFundamental(q1, q2);
+      log('   真匹配直喂:', tru.length, '对 | estimateFundamental →', Fr ? 'OK' : 'NULL（退化拒绝）', '| estimateRelativeMotion →', rq ? 'OK' : 'NULL');
+      if (Fr) {
+        const rr2 = __debug.ransacFundamental(q1, q2);
+        log('   RANSAC(count):', rr2 ? rr2.count : 'null');
+        // 手动复现候选竞争
+        const Ec = __debug.essentialFromF(Fr, Karr);
+        const cands = __debug.decomposeEssential(Ec);
+        cands.forEach((c, ci) => {
+          let pos = 0, tot = 0;
+          for (let k = 0; k < q1.length; k++) {
+            const X = __debug.triangulateDLT(c.R, c.t, q1[k], q2[k], Karr[0], [Karr[2], Karr[5]]);
+            tot++;
+            if (!X || !isFinite(X[0] + X[1] + X[2]) || X[2] <= 0) continue;
+            if (c.R[6] * X[0] + c.R[7] * X[1] + c.R[8] * X[2] + c.t[2] > 0) pos++;
+          }
+          const nct = ln(c.t);
+          const cs = (c.t[0] * rel01.t[0] + c.t[1] * rel01.t[1] + c.t[2] * rel01.t[2]) / (nct * ln(rel01.t));
+          const dr = Math.max(...c.R.map((v, idx2) => Math.abs(v - rel01.R[idx2])));
+          log(`   候选${ci}: 手性 ${pos}/${tot} | ΔR ${dr.toFixed(3)} | cos(t̂) ${cs.toFixed(3)}`);
+        });
+      }
+    }
+  }
+};
+
+document.getElementById('relBtn').onclick = () => {
+  out.textContent = '';
+  const F = feats();
+  const pairs0 = __debug.matchDescriptors(F[0].desc, F[1].desc);
+  pairs0.sort((a, b) => a[2] - b[2]); // 按质量排序（与 estimateStructure 一致）
+  log('匹配 0→1:', pairs0.length, '对');
+  if (pairs0.length < 16) { log('匹配太少，无法估计'); return; }
+  const p1 = pairs0.map(p => F[0].pts[p[0]]);
+  const p2 = pairs0.map(p => F[1].pts[p[1]]);
+  const t0 = performance.now();
+  let rel;
+  try { rel = __debug.estimateRelativeMotion(p1, p2, Karr); } catch (err) { log('异常:', String(err && err.stack || err)); return; }
+  log('用时 ms:', Math.round(performance.now() - t0));
+  if (!rel) { log('相对位姿失败'); return; }
+  // RANSAC 的 F 与 GT F 对比（归一化后点积应接近 ±1）
+  const rel01 = gtRel(0, 1);
+  const Km = [Karr[0], 0, Karr[2], 0, Karr[0], Karr[5], 0, 0, 1];
+  const Kinv = [1 / Km[0], 0, -Km[2] / Km[0], 0, 1 / Km[0], -Km[5] / Km[0], 0, 0, 1];
+  const KinvT = [Kinv[0], Kinv[3], Kinv[6], Kinv[1], Kinv[4], Kinv[7], Kinv[2], Kinv[5], Kinv[8]];
+  const Fgt = matmul(matmul(KinvT, matmul(skew(rel01.t.map(v => v / ln(rel01.t))), rel01.R)), Kinv);
+  const Egt = matmul(skew(rel01.t.map(v => v / ln(rel01.t))), rel01.R);
+  const rf = __debug.ransacFundamental(p1, p2);
+  let cosF = -2;
+  if (rf && rf.F) {
+    const nf = fro(Array.from(rf.F)), ng = fro(Fgt);
+    cosF = Array.from(rf.F).reduce((s, v, i) => s + v * Fgt[i], 0) / (nf * ng);
+  }
+  let gtInl = 0;
+  for (let i = 0; i < p1.length; i++) if (__debug.sampson(Fgt, p1[i], p2[i]) < 1.5) gtInl++;
+  log('RANSAC 内联:', rf ? rf.count : '-', '| GT F 内联:', gtInl, '| cos(F_ransac, F_gt):', cosF.toFixed(4));
+  // 候选分解诊断：E 是否准、4 个候选的手性计数、哪个候选才是 GT
+  if (rf && rf.F) {
+    const Ee = __debug.essentialFromF(rf.F, Karr);
+    const scE = Ee.reduce((s, v, i) => s + v * Egt[i], 0) / (fro(Egt) * fro(Egt));
+    const errE = Math.max(...Ee.map((v, i) => Math.abs(v - scE * Egt[i])));
+    log('E vs GT E: 缩放', scE.toFixed(3), '最大偏差', errE.toExponential(2), errE < 1e-3 ? 'PASS' : 'FAIL');
+    const cands = __debug.decomposeEssential(Ee);
+    cands.forEach((c, ci) => {
+      let pos = 0, tot = 0;
+      const step = Math.max(1, Math.floor(p1.length / 80));
+      for (let i = 0; i < p1.length; i += step) {
+        const X = __debug.triangulateDLT(c.R, c.t, p1[i], p2[i], Karr[0], [Karr[2], Karr[5]]);
+        tot++;
+        if (!X || !isFinite(X[0] + X[1] + X[2]) || X[2] <= 0) continue;
+        if (c.R[6] * X[0] + c.R[7] * X[1] + c.R[8] * X[2] + c.t[2] > 0) pos++;
+      }
+      const nct = ln(c.t), nrt = ln(rel01.t);
+      const dr = Math.max(...c.R.map((v, i) => Math.abs(v - rel01.R[i])));
+      const cs = (c.t[0] * rel01.t[0] + c.t[1] * rel01.t[1] + c.t[2] * rel01.t[2]) / (nct * nrt);
+      log(`  候选${ci}: 手性 ${pos}/${tot} | ΔR ${dr.toFixed(3)} | cos(t̂) ${cs.toFixed(3)}`);
+    });
+  }
+  const g = gtRel(0, 1);
+  const nt = ln(rel.t);
+  const inl = rel.inliers.reduce((s, x) => s + x, 0);
+  const dR = Math.max(...rel.R.map((v, i) => Math.abs(v - g.R[i])));
+  const cos = (rel.t[0] * g.t[0] + rel.t[1] * g.t[1] + rel.t[2] * g.t[2]) / (nt * ln(g.t));
+  log('内联:', inl, '/', pairs0.length);
+  // 三角化体检：对每个内联点算双视图重投影误差（应与匹配噪声同量级）
+  {
+    const es = [];
+    for (let i = 0; i < p1.length; i++) {
+      if (!rel.inliers[i]) continue;
+      const X = __debug.triangulateDLT(rel.R, rel.t, p1[i], p2[i], Karr[0], [Karr[2], Karr[5]]);
+      if (!X || X[2] <= 0) continue;
+      const ei = Math.hypot(Karr[0] * X[0] / X[2] + Karr[2] - p1[i][0], Karr[0] * X[1] / X[2] + Karr[5] - p1[i][1]);
+      const Xj = [rel.R[0] * X[0] + rel.R[1] * X[1] + rel.R[2] * X[2] + rel.t[0],
+        rel.R[3] * X[0] + rel.R[4] * X[1] + rel.R[5] * X[2] + rel.t[1],
+        rel.R[6] * X[0] + rel.R[7] * X[1] + rel.R[8] * X[2] + rel.t[2]];
+      const ej = Xj[2] > 0 ? Math.hypot(Karr[0] * Xj[0] / Xj[2] + Karr[2] - p2[i][0], Karr[0] * Xj[1] / Xj[2] + Karr[5] - p2[i][1]) : -1;
+      es.push([ei, ej]);
+    }
+    es.sort((a, b) => a[0] - b[0]);
+    const med = es.length ? es[es.length >> 1] : null;
+    log('三角化体检:', es.length, '点 | ei 中位/90分位', med ? med[0].toFixed(2) : '-', es.length ? es[Math.floor(es.length * 0.9)][0].toFixed(1) : '-',
+      '| ej 中位/90分位', med ? med[1].toFixed(2) : '-', es.length ? es[Math.floor(es.length * 0.9)][1].toFixed(1) : '-');
+  }
+  log('R:', rel.R.map(v => +v.toFixed(3)));
+  log('GT R:', g.R.map(v => +v.toFixed(3)));
+  log('t̂:', rel.t.map(v => +(v / nt).toFixed(3)));
+  log('GT t̂:', g.t.map(v => +(v / ln(g.t)).toFixed(3)));
+  log('判定: ΔR', dR.toExponential(2), 'cos(t̂)', cos.toFixed(4), inl >= 15 && dR < 1e-2 && cos > 0.98 ? 'PASS' : 'FAIL');
+};
+
+document.getElementById('fullBtn').onclick = async () => {
+  out.textContent = '';
+  const t0 = performance.now();
+  try {
+    const { poses, tracks, f: ff, cx } = await S.estimateStructure(views, (s, i, n) => log(`[${s}] ${i}/${n}`));
+    log('完成 ms:', Math.round(performance.now() - t0), '| tracks:', tracks.size);
+    log('poses[1]:', poses[1].map(v => +v.toFixed(3)));
+    log('poses[8]:', poses[8].map(v => +v.toFixed(3)));
+    // 验证：把所有 track 投回其观测视图，看重投影误差（与约定无关，最硬的指标）
+    const F = feats();
+    const errs = [];
+    const perView = poses.map(() => ({ s: 0, n: 0 }));
+    tracks.forEach(t => {
+      if (t.obs.length < 2) return;
+      let e = 0;
+      for (const o of t.obs) {
+        const pr = S.projectToView(poses[o.v], ff, cx, t.p3);
+        const uv = F[o.v].pts[o.ki];
+        if (pr && uv) {
+          const d = Math.hypot(pr.u - uv[0], pr.v - uv[1]);
+          e += d;
+          perView[o.v].s += d; perView[o.v].n++;
+        }
+      }
+      errs.push(e / t.obs.length);
+    });
+    errs.sort((a, b) => a - b);
+    const med = errs.length ? errs[errs.length >> 1] : -1;
+    log('重投影误差: 中位数', med.toFixed(2), 'px | 90分位', errs.length ? errs[Math.floor(errs.length * 0.9)].toFixed(2) : '-', 'px | 轨迹数', errs.length);
+    // 逐视图误差 + 相机中心 vs GT（尺度归一后）
+    const camC = p => [-p[0] * p[9] - p[3] * p[10] - p[6] * p[11], -p[1] * p[9] - p[4] * p[10] - p[7] * p[11], -p[2] * p[9] - p[5] * p[10] - p[8] * p[11]];
+    const cc = camC(poses[1]), gc = gt[1].C;
+    const sNorm = Math.hypot(...cc) / Math.hypot(...gc); // 全局尺度（view1 对齐）
+    const vlines = [];
+    for (let v = 1; v < poses.length; v += 4) {
+      const c = camC(poses[v]);
+      const dc = Math.hypot(c[0] / sNorm - gt[v].C[0], c[1] / sNorm - gt[v].C[1], c[2] / sNorm - gt[v].C[2]);
+      vlines.push(`v${v}: ${perView[v].n ? (perView[v].s / perView[v].n).toFixed(1) : '-'}px |C|=${dc.toFixed(2)}`);
+    }
+    log('逐视图:', vlines.join('  '));
+    // 位姿遥测：每个视图的 R / t̂ 与 GT 位姿对比（GT pose: X_cam = R(X_w − C)）
+    const gtPose = gtv => {
+      const t = [-(gtv.R[0] * gtv.C[0] + gtv.R[1] * gtv.C[1] + gtv.R[2] * gtv.C[2]),
+        -(gtv.R[3] * gtv.C[0] + gtv.R[4] * gtv.C[1] + gtv.R[5] * gtv.C[2]),
+        -(gtv.R[6] * gtv.C[0] + gtv.R[7] * gtv.C[1] + gtv.R[8] * gtv.C[2])];
+      return { R: gtv.R, t };
+    };
+    const tl = [];
+    for (const e of (window.__sfmLog || [])) {
+      const gp = gtRel(0, e.j); // 恢复位姿在 cam-0 系里，GT 也要换到同一系
+      const dR = Math.max(...e.R.map((v, k) => Math.abs(v - gp.R[k])));
+      const nt = ln(e.t), ng = ln(gp.t);
+      const cs = (e.t[0] * gp.t[0] + e.t[1] * gp.t[1] + e.t[2] * gp.t[2]) / (nt * ng);
+      // pair 级：相对位姿 vs GT 相对位姿（直接看这对选得对不对）
+      const gr = gtRel(e.i, e.j);
+      const pdR = Math.max(...e.relR.map((v, k) => Math.abs(v - gr.R[k])));
+      const pnt = ln(e.sc), png = ln(gr.t);
+      const pcs = (e.sc[0] * gr.t[0] + e.sc[1] * gr.t[1] + e.sc[2] * gr.t[2]) / (pnt * png);
+      tl.push(`v${e.j}(←${e.i}): ΔR ${dR.toFixed(3)} cos(t) ${cs.toFixed(2)} | pair ΔR ${pdR.toFixed(3)} cos ${pcs.toFixed(2)}`);
+    }
+    log('位姿遥测:', tl.join('  '));
+    // 抽 3 条观测最多的轨迹，逐观测看重投影误差分布
+    const top = [...tracks.values()].sort((a, b) => b.obs.length - a.obs.length).slice(0, 3);
+    for (const t of top) {
+      const parts = t.obs.map(o => {
+        const pr = S.projectToView(poses[o.v], ff, cx, t.p3);
+        const uv = F[o.v].pts[o.ki];
+        return pr && uv ? `v${o.v}:${Math.hypot(pr.u - uv[0], pr.v - uv[1]).toFixed(1)}` : `v${o.v}:--`;
+      });
+      log('轨迹 obs=' + t.obs.length, parts.join(' '), '| p3:', t.p3.map(v => +v.toFixed(2)));
+    }
+    log('判定:', med >= 0 && med < 3 ? 'PASS' : 'FAIL');
+    window.__res = { poses, tracks, f: ff, cx };
+  } catch (e) {
+    log('失败:', String(e && e.message || e));
+  }
+};
+</script>
+</body>
+</html>

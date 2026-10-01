@@ -3,6 +3,7 @@
 import { buildCloud, normalizeDepth } from './splat.js';
 import { exportPLY, exportSplat, exportCanvasPNG } from './exporter.js';
 import { extractFrames } from './video.js';
+import { buildMultiViewCloud } from './multiview.js';
 import { startWaveBackground } from './wave-bg.js';
 import { revealAll } from './reveal.js';
 import { t, applyI18n, detectLang, setLang, getLang } from './i18n.js';
@@ -18,17 +19,22 @@ const els = {
   sourceHead: $('sourceHead'), sourceCount: $('sourceCount'),
   thumbs: $('thumbs'), srcCanvas: $('srcCanvas'), depthCanvas: $('depthCanvas'),
   videoStrip: $('videoStrip'), frameNote: $('frameNote'), samplesRow: $('samplesRow'),
+  viewsPanel: $('viewsPanel'), viewsList: $('viewsList'), viewsCount: $('viewsCount'),
+  viewsNote: $('viewsNote'), mvBuildBtn: $('mvBuildBtn'), viewsClearBtn: $('viewsClearBtn'),
   statusText: $('statusText'), cloudCount: $('cloudCount'),
   orbitBtn: $('orbitBtn'), resetBtn: $('resetBtn'), shotBtn: $('shotBtn'),
   viewport: $('viewport'),
   summary: $('summary'), statSplats: $('statSplats'), statInfer: $('statInfer'), statBuild: $('statBuild'),
+  statSplatsL: $('statSplatsL'), statInferL: $('statInferL'), statBuildL: $('statBuildL'),
   toasts: $('toasts'),
 };
 
 const MOCK = new URLSearchParams(location.search).has('mock');
 const state = {
-  kind: null,            // 'image' | 'video'
-  bitmap: null,          // 图片解码结果
+  mode: 'single',        // 'single' | 'multi'
+  kind: null,            // 单图模式：'image' | 'video'
+  mvBitmaps: [],         // 多图模式：解码后的位图
+  bitmap: null,
   frames: [], selFrame: 0,
   source: null, imgData: null, depth: null, cloud: null,
   params: { quality: 512, strength: 0.45, size: 1, invert: false },
@@ -50,6 +56,8 @@ els.langBtn.addEventListener('click', () => {
   setLang(getLang() === 'zh' ? 'en' : 'zh');
   applyI18n();
   syncLangBtn();
+  syncStatsLabels();
+  renderViews();
   toast(t('lang.switched'));
 });
 
@@ -72,6 +80,14 @@ function syncOrbitBtn() {
   if (!viewer) return;
   els.orbitBtn.classList.toggle('is-active', viewer.autoRotate);
   els.orbitBtn.setAttribute('aria-pressed', String(viewer.autoRotate));
+}
+
+// 统计卡标签随模式/语言切换：多图模式后两张是「视图数 / 总耗时」
+function syncStatsLabels() {
+  const multi = state.mode === 'multi';
+  els.statSplatsL.textContent = t('summary.splats');
+  els.statInferL.textContent = multi ? t('summary.views') : t('summary.infer');
+  els.statBuildL.textContent = multi ? t('summary.elapsed') : t('summary.build');
 }
 
 /* ---------------- 3D 视口（懒加载：three.js 不进首屏关键路径） ---------------- */
@@ -171,6 +187,34 @@ function fitCanvas(src, maxSide) {
   return canvas;
 }
 
+async function handleFiles(fileList) {
+  const files = Array.from(fileList || []);
+  if (!files.length) return;
+  const images = files.filter(f => f.type.startsWith('image/'));
+  const nonImages = files.length - images.length;
+
+  // 两张及以上图片 → 多视角完整重建路径；其余沿用单文件链路
+  if (images.length >= 2 && !nonImages) {
+    try {
+      state.mvBitmaps = await Promise.all(images.map(imageToBitmap));
+      state.mode = 'multi';
+      els.videoStrip.hidden = true;
+      els.frameNote.hidden = true;
+      els.sourceHead.hidden = true;
+      els.thumbs.hidden = true;
+      els.samplesRow.hidden = true;
+      els.viewsPanel.hidden = false;
+      renderViews();
+      revealAll();
+    } catch (err) {
+      console.error(err);
+      toast(t('error.pipeline'), true);
+    }
+    return;
+  }
+  handleFile(files[0]);
+}
+
 async function handleFile(file) {
   if (!file) return;
   const isImage = file.type.startsWith('image/');
@@ -181,6 +225,8 @@ async function handleFile(file) {
   }
 
   try {
+    state.mode = 'single';
+    els.viewsPanel.hidden = true;
     if (isImage) {
       state.kind = 'image';
       state.frames = [];
@@ -264,6 +310,8 @@ function rebuildCloud() {
   els.statSplats.textContent = state.cloud.count.toLocaleString();
   els.statInfer.textContent = `${(state.inferMs / 1000).toFixed(1)}s`;
   els.statBuild.textContent = `${Math.round(buildMs)}ms`;
+  state.mode = 'single';
+  syncStatsLabels();
   setStatus(t('status.done'));
 }
 
@@ -317,6 +365,112 @@ function markStrip() {
     b.classList.toggle('is-sel', i === state.selFrame));
 }
 
+/* ---------------- 多视角：视图列表与重建 ---------------- */
+
+function renderViews() {
+  els.viewsList.innerHTML = '';
+  state.mvBitmaps.forEach((bm, i) => {
+    const wrap = document.createElement('div');
+    wrap.className = 'vf';
+    const c = document.createElement('canvas');
+    c.width = 88; c.height = 56;
+    const s = Math.max(88 / bm.width, 56 / bm.height);
+    c.getContext('2d').drawImage(bm, (88 - bm.width * s) / 2, (56 - bm.height * s) / 2, bm.width * s, bm.height * s);
+
+    const idx = document.createElement('span');
+    idx.className = 'ft';
+    idx.textContent = `#${i + 1}`;
+
+    const rm = document.createElement('button');
+    rm.className = 'rm';
+    rm.type = 'button';
+    rm.textContent = '×';
+    rm.title = t('views.rm');
+    rm.addEventListener('click', (e) => {
+      e.stopPropagation();
+      state.mvBitmaps.splice(i, 1);
+      renderViews();
+    });
+
+    wrap.append(c, idx, rm);
+    els.viewsList.appendChild(wrap);
+  });
+
+  els.viewsCount.textContent = t('views.counted', { n: state.mvBitmaps.length });
+  els.viewsNote.textContent = state.mvBitmaps.length > 12 ? t('views.tooMany') : t('views.hint');
+  els.mvBuildBtn.disabled = state.mvBitmaps.length < 2;
+}
+
+els.viewsClearBtn.addEventListener('click', () => {
+  state.mvBitmaps = [];
+  els.viewsPanel.hidden = true;
+  els.viewsList.innerHTML = '';
+});
+
+const MV_ERRORS = {
+  E_TEXTURE: () => t('views.err.texture'),
+  E_MATCH: () => t('views.err.match'),
+  E_EMPTY: () => t('views.err.empty'),
+};
+
+els.mvBuildBtn.addEventListener('click', async () => {
+  if (state.mvBitmaps.length < 2 || state.busy) return;
+  state.busy = true;
+  const t0 = performance.now();
+  els.exportPly.disabled = true;
+  els.exportSplat.disabled = true;
+  els.exportDepth.disabled = true;
+  try {
+    // 深度模型与 multiview 共用同一模块实例，提前挂上下载进度
+    const dm = await import('./depth.js');
+    dm.setProgressHandler((p) => {
+      els.progressWrap.hidden = false;
+      els.progressBar.style.width = `${Math.round(p * 100)}%`;
+      els.progressText.textContent = `${Math.round(p * 100)}%`;
+    });
+
+    els.mvBuildBtn.textContent = t('views.building');
+    const cloud = await buildMultiViewCloud(state.mvBitmaps, state.params, (kind, key, vars) => {
+      // 约定：onProgress(kind, ...)——'status' 带 (key, vars)，'progress' 带分数
+      if (kind === 'progress') {
+        els.progressWrap.hidden = false;
+        els.progressBar.style.width = `${Math.round(key * 100)}%`;
+        els.progressText.textContent = `${Math.round(key * 100)}%`;
+      } else {
+        setStatus(t(key, vars));
+      }
+    });
+    els.progressWrap.hidden = true;
+
+    const v = await ensureViewer();
+    v.setCloud(cloud);
+    state.cloud = cloud;
+    state.mode = 'multi';
+
+    els.cloudCount.textContent = `${cloud.count.toLocaleString()} · ${cloud.viewCount} ${t('summary.views')}`;
+    els.statSplats.textContent = cloud.count.toLocaleString();
+    els.statInfer.textContent = String(cloud.viewCount);
+    els.statBuild.textContent = `${((performance.now() - t0) / 1000).toFixed(1)}s`;
+    syncStatsLabels();
+
+    setStatus(t('status.done'));
+    els.exportPly.disabled = false;
+    els.exportSplat.disabled = false;
+    els.exportDepth.disabled = false;
+    els.summary.hidden = false;
+    revealAll();
+  } catch (err) {
+    console.error(err);
+    els.progressWrap.hidden = true;
+    const map = MV_ERRORS[err?.message];
+    toast(map ? map() : (err?.message || t('error.pipeline')), true);
+    setStatus(t('status.error'));
+  } finally {
+    state.busy = false;
+    els.mvBuildBtn.textContent = t('views.build');
+  }
+});
+
 /* ---------------- 导出 ---------------- */
 
 function downloadBlob(blob, filename) {
@@ -360,8 +514,8 @@ els.rebuildBtn.addEventListener('click', () => runPipeline());
     e.preventDefault();
     els.dropzone.classList.remove('drag');
     if (ev === 'drop') {
-      const f = e.dataTransfer?.files?.[0];
-      if (f) handleFile(f);
+      const files = e.dataTransfer?.files;
+      if (files?.length) handleFiles(files);
     }
   }));
 els.dropzone.addEventListener('click', () => els.fileInput.click());
@@ -369,7 +523,7 @@ els.dropzone.addEventListener('keydown', (e) => {
   if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); els.fileInput.click(); }
 });
 els.fileInput.addEventListener('change', () => {
-  handleFile(els.fileInput.files[0]);
+  handleFiles(els.fileInput.files);
   els.fileInput.value = '';
 });
 
