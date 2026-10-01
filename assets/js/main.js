@@ -1,7 +1,6 @@
 // Image2Splat 主控：文件入口 → 深度推理 → 点云构建 → 交互/导出。
 
-import { SplatViewer } from './viewer.js';
-import { buildCloud, normalizeDepth, WORLD } from './splat.js';
+import { buildCloud, normalizeDepth } from './splat.js';
 import { exportPLY, exportSplat, exportCanvasPNG } from './exporter.js';
 import { extractFrames } from './video.js';
 import { startWaveBackground } from './wave-bg.js';
@@ -70,24 +69,36 @@ function toast(msg, isErr = false) {
 }
 
 function syncOrbitBtn() {
+  if (!viewer) return;
   els.orbitBtn.classList.toggle('is-active', viewer.autoRotate);
   els.orbitBtn.setAttribute('aria-pressed', String(viewer.autoRotate));
 }
 
-/* ---------------- 3D 视口 ---------------- */
+/* ---------------- 3D 视口（懒加载：three.js 不进首屏关键路径） ---------------- */
 
 const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
-const viewer = new SplatViewer(els.viewport, { onUserOrbit: syncOrbitBtn });
-viewer.setAutoRotate(!reduceMotion);
-syncOrbitBtn();
+let viewer = null;
 
-els.orbitBtn.addEventListener('click', () => {
-  viewer.setAutoRotate(!viewer.autoRotate);
+async function ensureViewer() {
+  if (viewer) return viewer;
+  // viewer.js 静态依赖 three.js（1.3MB）：拖文件前不需要它，动态加载保证首屏只下轻量模块
+  const { SplatViewer } = await import('./viewer.js');
+  viewer = new SplatViewer(els.viewport, { onUserOrbit: syncOrbitBtn });
+  viewer.setAutoRotate(!reduceMotion);
+  syncOrbitBtn();
+  return viewer;
+}
+
+els.orbitBtn.addEventListener('click', async () => {
+  const v = await ensureViewer();
+  v.setAutoRotate(!v.autoRotate);
   syncOrbitBtn();
 });
-els.resetBtn.addEventListener('click', () => viewer.resetView());
+els.resetBtn.addEventListener('click', async () => {
+  (await ensureViewer()).resetView();
+});
 els.shotBtn.addEventListener('click', async () => {
-  const blob = await viewer.screenshot();
+  const blob = await (await ensureViewer()).screenshot();
   if (!blob) return;
   downloadBlob(blob, 'image2splat-view.png');
   toast(t('toast.shotDownloaded'));
@@ -214,10 +225,12 @@ async function runPipeline() {
       .getImageData(0, 0, state.source.width, state.source.height);
     drawThumb(els.srcCanvas, state.source);
 
-    // 2) 深度推理
+    // 2) 深度推理（视口模块与推理并行下载，不相互阻塞）
+    const viewerReady = ensureViewer();
     setStatus(t('status.infer'));
     state.depth = await estimate(state.source);
     drawDepthPreview();
+    await viewerReady;
 
     // 3) 点云
     rebuildCloud();
@@ -241,7 +254,7 @@ async function runPipeline() {
 }
 
 function rebuildCloud() {
-  if (!state.depth || !state.imgData) return;
+  if (!state.depth || !state.imgData || !viewer) return;
   const t0 = performance.now();
   state.cloud = buildCloud(state.imgData, state.depth, state.params);
   const buildMs = performance.now() - t0;
@@ -397,3 +410,14 @@ els.optInvert.addEventListener('change', () => {
 
 setStatus(t('status.idle'));
 revealAll();
+// 视口预热：拖文件时 three.js 已在下载或就绪；只看不用的访客不花这笔流量。
+// 延迟 3 秒或首次指针交互（谁先到谁触发），与推理时的并行预载互不重复。
+let warmed = false;
+const warm = async () => {
+  if (warmed) return;
+  warmed = true;
+  await new Promise(r => setTimeout(r, 3000));
+  ensureViewer();
+};
+warm();
+window.addEventListener('pointerdown', warm, { once: true });

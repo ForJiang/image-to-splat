@@ -8,12 +8,8 @@ let _pipe = null;       // 缓存的 pipeline
 let _device = null;     // 'webgpu' | 'wasm'
 let _progressHandler = null;
 
-export function hasWebGPU() {
+function hasWebGPU() {
   return typeof navigator !== 'undefined' && 'gpu' in navigator;
-}
-
-export function currentDevice() {
-  return _device;
 }
 
 export function setProgressHandler(fn) {
