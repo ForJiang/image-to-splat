@@ -82,6 +82,26 @@ python3 -m http.server 8000
 
 **调试模式**：`?mock=1` 用合成深度图代替模型，可离线验证点云 / 导出链路。
 
+## 桌面应用
+
+不想开浏览器？同一套前端代码套了一个 Electron 桌面壳（`desktop/`），与网页版功能一致，另有几处原生增强：
+
+- 深度模型（约 77 MB）随应用打包，**首次启动即用、完全离线**，没有下载等待
+- 点击拖入区弹系统文件选择器（图片 / 视频多选），导出走系统保存对话框
+- 支持「用 Image2Splat 打开」：Finder 里选中图片右键「打开方式」，或命令行 `open -a Image2Splat a.jpg b.jpg`（多张自动进入多图重建）
+
+开发与构建（需要 Node.js ≥ 20）：
+
+```bash
+cd desktop
+npm install
+npm start          # 开发运行（直接读仓库里的 index.html / assets / models）
+npm run build      # 打包 Image2Splat.app，模型作为 extra-resource 打进 .app（约 330MB）
+npm run build:dmg  # 进一步打成可分发的 .dmg（约 177MB，含 /Applications 拖拽位）
+```
+
+实现要点：主进程注册 `app://` 自定义协议，把仓库静态文件提供给渲染进程——ES module、fetch、wasm、WebGPU 全部按 http 语义工作（`file://` 下会被 CORS 卡死）；原生对话框与「打开方式」经 `window.i2sDesktop` 桥接，网页端检测不到该对象时自动回退到原有下载 / 选择链路，两份代码同源。应用未做代码签名：本机构建可直接运行；分发给他人前需 `xattr -dr com.apple.quarantine /Applications/Image2Splat.app`，或改用开发者证书签名。构建脚本目前只出 macOS arm64，Windows / Linux 把 `--platform` / `--arch` 换掉即可；发布到 GitHub Releases 时把 `dist/*.dmg` 传上去即可（仓库里只提交源码，构建产物与 node_modules 已 gitignore）。
+
 ## 常见问题
 
 **多张照片能重建出完整的 3D 模型吗？** 能，这是多图模式的用途：一次导入 8-12 张环绕拍摄的照片（相邻照片保持 60% 以上重叠），站点会解算相机位姿并把各视角深度融合，得到可完整环绕的点云，被遮挡的背面由相邻视角补上。单张图则只有正面信息，生成的是「正面 + 深度浮雕」（2.5D）；若还想更进一步（带光照的真实高斯泼溅），那需要多角度照片加 GPU 训练（nerfstudio、Postshot 等）。
@@ -106,6 +126,7 @@ python3 -m http.server 8000
 - **Pipeline (single)**: decode; Depth Anything V2 (WebGPU fp16 / WASM q8, self-hosted ONNX); percentile-normalized depth; one gaussian disc per pixel; custom three.js Points shader; export `.ply` / `.splat`
 - **Pipeline (multi)**: FAST-12 + steered BRIEF (512-bit) descriptors; mutual-NN + ratio-test matching; RANSAC 8-point F (degeneracy-rejected, quality-biased sampling) to essential matrix with cheirality check; chained poses calibrated by seed points with DLT PnP refinement; per-view depth rescaled onto the SfM metric; voxel-hash fusion with averaged colors
 - **Design**: same dark-glass system as [image-metadata-cleaner](https://forjiang.github.io/image-metadata-cleaner/) — 60px topbar, WebGL sine-wave background, reveal animations, zh/en i18n
+- **Desktop**: `desktop/` wraps the same frontend in an Electron shell — the ~77 MB model ships inside the app (offline from first launch), native open/save dialogs, and "Open With" support; same codebase via an `app://` custom protocol, web builds fall back automatically
 - **Performance**: ~60KB first paint; three.js is dynamically imported and never sits in the critical path, and the depth model is fetched on first drop — the viewer module warms up 3s after load (or on first interaction) so the first rebuild starts with everything already in flight
 
 ## License

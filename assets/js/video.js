@@ -131,7 +131,8 @@ function snapshot(video, maxSide, t) {
   const canvas = document.createElement('canvas');
   canvas.width = w;
   canvas.height = h;
-  canvas.getContext('2d').drawImage(video, 0, 0, w, h);
+  // willReadFrequently：软件光栅，保证抽帧像素确定（清晰度评分与深度推理都吃这个画布）
+  canvas.getContext('2d', { willReadFrequently: true }).drawImage(video, 0, 0, w, h);
   return { canvas, t, sharp: sharpness(canvas) };
 }
 

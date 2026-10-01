@@ -51,6 +51,11 @@ function syncLangBtn() {
 setLang(detectLang());
 applyI18n();
 syncLangBtn();
+// 桌面端模型随应用打包，把「首用需下载」文案换成离线版（改 data-i18n 键，语言切换后仍正确）
+if (window.i2sDesktop?.isDesktop) {
+  const sub = document.querySelector('[data-i18n="drop.sub"]');
+  if (sub) { sub.setAttribute('data-i18n', 'drop.sub.desktop'); sub.textContent = t('drop.sub.desktop'); }
+}
 
 els.langBtn.addEventListener('click', () => {
   setLang(getLang() === 'zh' ? 'en' : 'zh');
@@ -117,7 +122,7 @@ els.shotBtn.addEventListener('click', async () => {
   const blob = await (await ensureViewer()).screenshot();
   if (!blob) return;
   downloadBlob(blob, 'image2splat-view.png');
-  toast(t('toast.shotDownloaded'));
+  toast(exportToast('toast.shotDownloaded'));
 });
 
 /* ---------------- 深度推理封装 ---------------- */
@@ -183,7 +188,8 @@ function fitCanvas(src, maxSide) {
   const h = Math.max(2, Math.round(sh * scale));
   const canvas = document.createElement('canvas');
   canvas.width = w; canvas.height = h;
-  canvas.getContext('2d').drawImage(src, 0, 0, w, h);
+  // willReadFrequently：软件光栅，理由同 multiview.fitCanvas——喂深度推理的像素必须确定
+  canvas.getContext('2d', { willReadFrequently: true }).drawImage(src, 0, 0, w, h);
   return canvas;
 }
 
@@ -473,7 +479,17 @@ els.mvBuildBtn.addEventListener('click', async () => {
 
 /* ---------------- 导出 ---------------- */
 
-function downloadBlob(blob, filename) {
+// 桌面端走系统保存对话框（exporter.saveAs 已内置该判断），话术随之下沉
+function exportToast(key) {
+  return t(window.i2sDesktop?.saveBlob ? 'toast.savedLocal' : key);
+}
+
+async function downloadBlob(blob, filename) {
+  const dk = window.i2sDesktop;
+  if (dk?.saveBlob) {
+    await dk.saveBlob(blob, filename);
+    return;
+  }
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
@@ -487,17 +503,17 @@ function downloadBlob(blob, filename) {
 els.exportPly.addEventListener('click', () => {
   if (!state.cloud) { toast(t('toast.needFirst'), true); return; }
   exportPLY(state.cloud, `image2splat-${state.cloud.count}pts.ply`);
-  toast(t('toast.plyDownloaded'));
+  toast(exportToast('toast.plyDownloaded'));
 });
 els.exportSplat.addEventListener('click', () => {
   if (!state.cloud) { toast(t('toast.needFirst'), true); return; }
   exportSplat(state.cloud, `image2splat-${state.cloud.count}.splat`);
-  toast(t('toast.splatDownloaded'));
+  toast(exportToast('toast.splatDownloaded'));
 });
 els.exportDepth.addEventListener('click', () => {
   if (!state.depth) { toast(t('toast.needFirst'), true); return; }
   exportCanvasPNG(els.depthCanvas, `image2splat-depth-${state.depth.w}.png`);
-  toast(t('toast.depthDownloaded'));
+  toast(exportToast('toast.depthDownloaded'));
 });
 els.rebuildBtn.addEventListener('click', () => runPipeline());
 
@@ -518,14 +534,25 @@ els.rebuildBtn.addEventListener('click', () => runPipeline());
       if (files?.length) handleFiles(files);
     }
   }));
-els.dropzone.addEventListener('click', () => els.fileInput.click());
+els.dropzone.addEventListener('click', async () => {
+  // 桌面端：点击投递区 = 系统文件选择器（图片/视频混合多选）
+  const dk = window.i2sDesktop;
+  if (dk?.openMedia) {
+    const files = await dk.openMedia();
+    if (files.length) handleFiles(files);
+    return;
+  }
+  els.fileInput.click();
+});
 els.dropzone.addEventListener('keydown', (e) => {
-  if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); els.fileInput.click(); }
+  if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); els.dropzone.click(); }
 });
 els.fileInput.addEventListener('change', () => {
   handleFiles(els.fileInput.files);
   els.fileInput.value = '';
 });
+// 桌面端「用 Image2Splat 打开」：Finder 右键 / open -a 传入的文件汇入同一入口
+window.i2sDesktop?.onOpenFiles?.((files) => { if (files.length) handleFiles(files); });
 
 // 示例
 document.querySelectorAll('.sample-btn').forEach(btn =>

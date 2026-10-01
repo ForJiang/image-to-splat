@@ -149,6 +149,8 @@ function fitCanvas(src, maxSide) {
   const canvas = document.createElement('canvas');
   canvas.width = Math.max(2, Math.round(sw * scale));
   canvas.height = Math.max(2, Math.round(sh * scale));
-  canvas.getContext('2d').drawImage(src, 0, 0, canvas.width, canvas.height);
+  // willReadFrequently：强制软件光栅。GPU 光栅的 drawImage 结果会随设备/负载抖动，
+  // 而 SfM 的特征匹配对像素极敏感（同张图换个 GPU 就可能匹配失败），必须走确定路径
+  canvas.getContext('2d', { willReadFrequently: true }).drawImage(src, 0, 0, canvas.width, canvas.height);
   return canvas;
 }

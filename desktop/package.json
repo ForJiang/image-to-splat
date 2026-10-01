@@ -1,0 +1,18 @@
+{
+  "name": "image2splat-desktop",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Image2Splat 桌面端（Electron 壳）：把纯静态站点原样装进桌面应用，模型随包分发、离线可用、原生打开/保存对话框",
+  "main": "main.js",
+  "license": "MIT",
+  "scripts": {
+    "start": "electron .",
+    "start:mock": "electron . --mock",
+    "build": "electron-packager . Image2Splat --platform=darwin --arch=arm64 --icon=icons/icon.icns --extra-resource=../index.html --extra-resource=../assets --extra-resource=../models --extra-resource=../vendor --out=dist --overwrite --ignore=\"^/dist$\"",
+    "build:dmg": "node scripts/make-dmg.mjs"
+  },
+  "devDependencies": {
+    "@electron/packager": "^18.3.1",
+    "electron": "^33.0.0"
+  }
+}

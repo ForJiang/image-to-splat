@@ -33,8 +33,9 @@ function grayOf(canvas) {
   return { g, W, H };
 }
 
-function detectFeatures(canvas) {
-  const { g, W, H } = grayOf(canvas);
+function detectFeatures(src) {
+  // src 可以是 canvas，也可以是 grayOf() 预取的灰度（estimateStructure 集中读像素用后者）
+  const { g, W, H } = (src && src.g) ? src : grayOf(src);
   const pts = []; // [x, y, score]
   const R = 3;
   const border = 34; // 定向窗口 P=15 + BRIEF 采样半径 16 + 余量：边缘点采样越界会拿到兜底值
@@ -694,9 +695,14 @@ export async function estimateStructure(views, onProgress) {
   const Karr = [f, 0, cx[0], 0, f, cx[1], 0, 0, 1];
 
   onProgress?.('features', 0, N);
+  // 先把所有视图的灰度像素集中取回，再进带进度回调的检测循环。
+  // 原因：getImageData 之后若插入 DOM 写入（进度刷新会触发 layout），Chromium 可能把
+  // 画布临时提升到 GPU 光栅，后续读回拿到旧帧/空帧——特征匹配会随机失败
+  // （表现为偶发 E_MATCH，同一份代码时好时坏）。先集中读像素可彻底避开该时序。
+  const grays = views.map(v => grayOf(v));
   const feats = [];
   for (let i = 0; i < N; i++) {
-    feats.push(detectFeatures(views[i]));
+    feats.push(detectFeatures(grays[i]));
     onProgress?.('features', i + 1, N);
     await Promise.resolve(); // 让出主线程
   }

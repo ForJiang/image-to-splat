@@ -1,7 +1,13 @@
 // 导出：.ply（二进制彩色点云）与 .splat（antimatter15 32 字节/泼溅格式）。
 // Blob 生成与保存分离，便于测试与复用。
 
-function saveAs(blob, filename) {
+async function saveAs(blob, filename) {
+  // 桌面端（Electron 壳注入 window.i2sDesktop）走系统保存对话框，否则浏览器下载
+  const dk = typeof window !== 'undefined' && window.i2sDesktop;
+  if (dk?.saveBlob) {
+    try { await dk.saveBlob(blob, filename); } catch (err) { console.error(err); }
+    return;
+  }
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
