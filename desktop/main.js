@@ -72,12 +72,15 @@ function isInside(root, target) {
 }
 
 function createWindow() {
+  // 窗口标题固定英文：页面的 document.title 跟随界面语言（默认中文），
+  // 应用标题栏不该跟着变，这里拦掉 page-title-updated 并写死
+  const WINDOW_TITLE = 'Image2Splat · Image to 3D Gaussian Splats';
   win = new BrowserWindow({
     width: 1280,
     height: 900,
     minWidth: 960,
     minHeight: 640,
-    title: 'Image2Splat',
+    title: WINDOW_TITLE,
     backgroundColor: '#0a0a0c', // 与站点底色一致，避免启动白闪
     titleBarStyle: 'hiddenInset',
     webPreferences: {
@@ -89,6 +92,7 @@ function createWindow() {
   });
 
   win.loadURL('app://bundle/index.html');
+  win.webContents.on('page-title-updated', (e) => e.preventDefault()); // 页面标题不得覆盖窗口标题
   win.on('closed', () => { win = null; });
 }
 
