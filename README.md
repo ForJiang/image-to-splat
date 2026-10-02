@@ -16,7 +16,8 @@ English intro at the bottom: [English](#english)
 | | |
 | --- | --- |
 | 图片模式 | 拖入 JPG / PNG / WebP 即可重建，`createImageBitmap` 自动烘焙 EXIF 方向，手机直拍也能用 |
-| 多图完整重建 | 一次导入 8-12 张环绕照片，解算相机位姿后融合成可完整环绕的点云（不只是正面浮雕）；视图列表支持单张移除、重建、清空 |
+| 多图完整重建 | 一次导入 8-12 张环绕照片，解算相机位姿后融合成可完整环绕的点云（不只是正面浮雕）；视图列表支持单张移除、重建、清空。实测 8 张约 5 秒出 48 万泼溅（网页端、模型已缓存），位姿重投影中位误差 2.6px |
+| 桌面应用 | Electron 桌面壳（`desktop/`）：约 77MB 模型随包分发，首次启动即用、完全离线；系统级多选 / 保存对话框，支持「用 Image2Splat 打开」；与网页版同一套前端代码，桥接不到时自动回退 |
 | 视频自动选帧 | 均匀抽 16 帧，按拉普拉斯方差自动挑最清晰的一帧参与重建，也可以手动点选换帧；seek 不了的分片视频（如 MediaRecorder 直出）自动降级为播放采样 |
 | 实时参数 | 深度强度、泼溅大小、深度方向调整即时生效（约 30ms，无需重新推理）；重建分辨率 流畅 384 / 均衡 512 / 高清 640 三档 |
 | 高斯点云渲染 | three.js 自定义 Points 着色器：不透明圆盘 + 径向明暗近似高斯体积感，深度写入获得正确遮挡，无需逐帧排序；边缘泼溅自动收缩、位置抖动打散网格感 |
@@ -89,6 +90,7 @@ python3 -m http.server 8000
 - 深度模型（约 77 MB）随应用打包，**首次启动即用、完全离线**，没有下载等待
 - 点击拖入区弹系统文件选择器（图片 / 视频多选），导出走系统保存对话框
 - 支持「用 Image2Splat 打开」：Finder 里选中图片右键「打开方式」，或命令行 `open -a Image2Splat a.jpg b.jpg`（多张自动进入多图重建）
+- 实测：8 张环绕照片约 11 秒生成 36-48 万泼溅（模型已在包内），单张照片数秒出约 20 万泼溅
 
 开发与构建（需要 Node.js ≥ 20）：
 
@@ -110,7 +112,7 @@ npm run build:dmg  # 进一步打成可分发的 .dmg（约 177MB，含 /Applica
 
 **我的图片或视频会被上传吗？** 不会。模型加载后，SfM、深度推理、点云构建、导出全部在你的浏览器里完成，断网也能用；页面没有任何上传代码。
 
-**首次使用为什么要等一会儿？** 首次需要下载约 50 MB 的深度模型（随站点自托管），之后浏览器会缓存，二次访问基本秒开。
+**首次使用为什么要等一会儿？** 首次需要下载约 50 MB 的深度模型（随站点自托管），之后浏览器会缓存，二次访问基本秒开。桌面版没有这个等待——模型已经打在应用里。
 
 **什么样的素材效果最好？** 主体清晰、有明确前后层次的场景，比如人物、盆栽、建筑立面；视频建议环绕物体拍摄，选物体正对镜头的一帧。
 
@@ -126,7 +128,7 @@ npm run build:dmg  # 进一步打成可分发的 .dmg（约 177MB，含 /Applica
 - **Pipeline (single)**: decode; Depth Anything V2 (WebGPU fp16 / WASM q8, self-hosted ONNX); percentile-normalized depth; one gaussian disc per pixel; custom three.js Points shader; export `.ply` / `.splat`
 - **Pipeline (multi)**: FAST-12 + steered BRIEF (512-bit) descriptors; mutual-NN + ratio-test matching; RANSAC 8-point F (degeneracy-rejected, quality-biased sampling) to essential matrix with cheirality check; chained poses calibrated by seed points with DLT PnP refinement; per-view depth rescaled onto the SfM metric; voxel-hash fusion with averaged colors
 - **Design**: same dark-glass system as [image-metadata-cleaner](https://forjiang.github.io/image-metadata-cleaner/) — 60px topbar, WebGL sine-wave background, reveal animations, zh/en i18n
-- **Desktop**: `desktop/` wraps the same frontend in an Electron shell — the ~77 MB model ships inside the app (offline from first launch), native open/save dialogs, and "Open With" support; same codebase via an `app://` custom protocol, web builds fall back automatically
+- **Desktop**: `desktop/` wraps the same frontend in an Electron shell — the ~77 MB model ships inside the app (offline from first launch, 8 orbiting shots → 0.36-0.48M splats in ~11s), native open/save dialogs, and "Open With" support; same codebase via an `app://` custom protocol, web builds fall back automatically
 - **Performance**: ~60KB first paint; three.js is dynamically imported and never sits in the critical path, and the depth model is fetched on first drop — the viewer module warms up 3s after load (or on first interaction) so the first rebuild starts with everything already in flight
 
 ## License
