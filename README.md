@@ -1,6 +1,8 @@
 # Image2Splat · 图生 3D 高斯泼溅
 
-> 把一张图片、一段视频或多张环绕照片，变成可旋转的 3D 高斯泼溅点云——深度估计模型为每个像素估算距离，生成数十万枚带颜色的高斯「泼溅」；多图模式先用纯 JS 的 SfM 解出相机位姿，再把各视角深度融合进同一坐标系，得到可完整环绕的点云。**纯静态部署，推理与渲染全部在浏览器里完成，文件不上传任何服务器。**
+> 把图片、视频帧或多张环绕照片变成可旋转的 3D 高斯泼溅点云：Depth Anything V2 深度估计 + 纯 JS 多视角 SfM 位姿解算，WebGPU 加速，导出 .ply/.splat；纯静态，全部在浏览器内完成，文件不上传；另有完全离线的 Electron 桌面版
+>
+> Turn photos, video frames, or orbit shots into a rotatable 3D Gaussian-splatting point cloud — Depth Anything V2 + pure-JS SfM, WebGPU, .ply/.splat export; all in-browser, zero upload; offline Electron build
 
 [![GitHub Pages](https://img.shields.io/badge/GitHub%20Pages-在线-3ddc97.svg)](https://forjiang.github.io/image-to-splat/)
 [![License: MIT](https://img.shields.io/badge/License%20MIT-d8d8ff.svg)](LICENSE)
