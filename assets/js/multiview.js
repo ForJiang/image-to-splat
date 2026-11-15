@@ -8,9 +8,18 @@ import { normalizeDepth } from './splat.js';
 const MAX_VIEWS = 12;
 const MAX_SPLATS = 1200000;
 
+/** 超过上限时等距采样（保留首尾、保持环绕顺序），与「均匀取 N 张」的 UI 文案一致 */
+export function pickEvenly(items, k) {
+  const n = items.length;
+  if (n <= k) return items.slice();
+  if (k <= 1) return [items[0]];
+  return Array.from({ length: k }, (_, i) => items[Math.round((i * (n - 1)) / (k - 1))]);
+}
+
 export async function buildMultiViewCloud(bitmaps, params, onProgress) {
-  // 1) 视图降采样到最长边 ≤512（特征匹配与颜色同一来源）
-  const views = bitmaps.slice(0, MAX_VIEWS).map(b => fitCanvas(b, params.quality));
+  // 1) 视图降采样到最长边 ≤512（特征匹配与颜色同一来源）；
+  //    超过 MAX_VIEWS 的一组均匀取样（slice 会把后半张照片全部丢掉）
+  const views = pickEvenly(bitmaps, MAX_VIEWS).map(b => fitCanvas(b, params.quality));
   const N = views.length;
 
   // 2) SfM：相机位姿 + 稀疏种子点

@@ -4,21 +4,35 @@
 
 export const WORLD = 10; // 点云宽度固定映射到 10 个世界单位
 
-// 2%~98% 分位稳健归一化（极值离群点不拖垮整体尺度），返回 0..1，越大越近
+// 2%~98% 分位稳健归一化（极值离群点不拖垮整体尺度），返回 0..1，越大越近。
+// 结果按深度对象缓存：强度/大小滑杆每次 input 都会重建点云走到这里，
+// 全量排序在 640 档是 41 万元素 O(n log n)，缓存后拖动只重算几何。
+// 前提：depth 对象由调用方整体替换、从不原地改数据（estimate/mock 均如此），
+// WeakMap 不阻止旧深度被回收；返回的 dn 是共享只读数组，调用方不得改写。
+const _normCache = new WeakMap();
+
 export function normalizeDepth(depth, invert) {
   const { data, w, h } = depth;
   const n = w * h;
-  const sorted = Float32Array.from(data).sort();
-  const lo = sorted[Math.floor(n * 0.02)] ?? 0;
-  const hi = sorted[Math.min(n - 1, Math.floor(n * 0.98))] ?? 1;
-  const span = Math.max(hi - lo, 1e-6);
+  const cached = _normCache.get(depth);
+  if (cached && cached.invert === invert) return cached.dn;
 
+  let lo = cached?.lo, hi = cached?.hi;
+  if (lo === undefined) {
+    // 首次见到该深度对象：排序定分位边界（之后 invert 切换直接复用，不再排序）
+    const sorted = Float32Array.from(data).sort();
+    lo = sorted[Math.floor(n * 0.02)] ?? 0;
+    hi = sorted[Math.min(n - 1, Math.floor(n * 0.98))] ?? 1;
+  }
+
+  const span = Math.max(hi - lo, 1e-6);
   const dn = new Float32Array(n);
   for (let i = 0; i < n; i++) {
     let v = (data[i] - lo) / span;
     v = v < 0 ? 0 : v > 1 ? 1 : v;
     dn[i] = invert ? 1 - v : v;
   }
+  _normCache.set(depth, { lo, hi, invert, dn });
   return dn;
 }
 

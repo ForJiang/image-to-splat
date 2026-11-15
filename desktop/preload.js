@@ -6,13 +6,7 @@ const { contextBridge, ipcRenderer } = require('electron');
 contextBridge.exposeInMainWorld('i2sDesktop', {
   isDesktop: true,
 
-  /** 原生多选图片对话框 → File[]（经 app://fs/ 读内容，前端与拖拽拿到的是同一种 File） */
-  async openImages() {
-    const specs = await ipcRenderer.invoke('dialog:openImages');
-    return specs.map(s => toFile(s));
-  },
-
-  /** 原生图片/视频混合选择 → File[]（视频也走这里，前端按 type 分流） */
+  /** 原生图片/视频混合选择 → File[]（经 app://fs/ 读内容，前端与拖拽拿到的是同一种 File） */
   async openMedia() {
     const specs = await ipcRenderer.invoke('dialog:openMedia');
     return specs.map(s => toFile(s));

@@ -1,0 +1,21 @@
+# 几何/管线单测：纯 Node，零依赖，无需安装。
+# Node ≥ 22.7 才默认启用 ESM 模块语法自动检测（tests 导入的 assets/js/*.js 无
+# package.json type 标注，靠检测按 ESM 加载），因此这里固定 Node 24。
+name: tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: SfM 几何单测
+        run: node tests/geom-unit.mjs
+      - name: 管线单测（归一化缓存 / 等距采样）
+        run: node tests/pipeline-unit.mjs
