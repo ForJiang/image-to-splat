@@ -1,7 +1,7 @@
 // Electron 主进程。Web 版是同一套前端代码——这里只做三件事：
 // 1) 用 app:// 自定义协议把仓库静态文件（index.html / assets / models）提供给渲染进程，
 //    让 ES module、fetch、wasm、WebGPU 全部按 http 语义工作（file:// 下会被 CORS 卡死）；
-// 2) 原生打开/保存对话框（图片多选、导出 .ply/.splat/PNG）；
+// 2) 原生打开/保存对话框（图片/视频多选、导出 .ply/.splat/PNG）；
 // 3) 响应「用 Image2Splat 打开」（Finder 右键 / open -a ... 文件 / 命令行直启），
 //    把文件喂给前端同一入口。
 //
@@ -13,6 +13,10 @@ const fs = require('node:fs');
 
 // 开发态（electron . 从 desktop/ 跑）直接指向仓库根；打包后资源在 Contents/Resources
 const ROOT = app.isPackaged ? process.resourcesPath : path.resolve(__dirname, '..');
+
+// npm run start:mock → electron . --mock：把 ?mock=1 带给前端，走合成深度图的
+// 离线自检链路（不加载 50MB 模型），由前端 main.js 的 URLSearchParams 识别
+const MOCK_MODE = process.argv.includes('--mock');
 
 // 自定义协议必须先注册为 privileged，浏览器才会把它当 http 一样对待
 protocol.registerSchemesAsPrivileged([{
@@ -91,7 +95,7 @@ function createWindow() {
     },
   });
 
-  win.loadURL('app://bundle/index.html');
+  win.loadURL('app://bundle/index.html' + (MOCK_MODE ? '?mock=1' : ''));
   win.webContents.on('page-title-updated', (e) => e.preventDefault()); // 页面标题不得覆盖窗口标题
   win.on('closed', () => { win = null; });
 }
@@ -129,20 +133,6 @@ function boot() {
     });
 
     // ---- 原生对话框 ----
-    ipcMain.handle('dialog:openImages', async () => {
-      const r = await dialog.showOpenDialog(win, {
-        title: '选择照片（多选）',
-        properties: ['openFile', 'multiSelections'],
-        filters: [
-          { name: '图片', extensions: ['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp', 'avif'] },
-          { name: '所有文件', extensions: ['*'] },
-        ],
-      });
-      if (r.canceled) return [];
-      for (const p of r.filePaths) allowedFsPaths.add(p);
-      return r.filePaths.map(p => ({ path: p, name: path.basename(p), mime: MIME_BY_EXT[path.extname(p).toLowerCase()] || 'image/png' }));
-    });
-
     ipcMain.handle('dialog:openMedia', async () => {
       // 视频走站点现有视频链路：同图多选，交给前端按 type 分流
       const r = await dialog.showOpenDialog(win, {
