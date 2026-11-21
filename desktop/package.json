@@ -4,7 +4,7 @@
   "private": true,
   "description": "Image2Splat 桌面端（Electron 壳）：把纯静态站点原样装进桌面应用，模型随包分发、离线可用、原生打开/保存对话框",
   "main": "main.js",
-  "license": "MIT",
+  "license": "GPL-3.0",
   "scripts": {
     "start": "electron .",
     "start:mock": "electron . --mock",
