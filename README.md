@@ -1,11 +1,11 @@
 # Image2Splat · 图生 3D 高斯泼溅
 
-> 把图片、视频帧或多张环绕照片变成可旋转的 3D 高斯泼溅点云：Depth Anything V2 深度估计 + 纯 JS 多视角 SfM 位姿解算，WebGPU 加速，导出 .ply/.splat；纯静态，全部在浏览器内完成，文件不上传；另有完全离线的 Electron 桌面版
+> 图片/视频/环绕照片 → 可旋转 3D 高斯泼溅点云，全在浏览器内完成
 >
-> Turn photos, video frames, or orbit shots into a rotatable 3D Gaussian-splatting point cloud — Depth Anything V2 + pure-JS SfM, WebGPU, .ply/.splat export; all in-browser, zero upload; offline Electron build
+> Turn photos, videos or orbit shots into a rotatable 3D Gaussian-splatting point cloud, all in-browser
 
 [![GitHub Pages](https://img.shields.io/badge/GitHub%20Pages-在线-3ddc97.svg)](https://forjiang.github.io/image-to-splat/)
-[![License: MIT](https://img.shields.io/badge/License%20MIT-d8d8ff.svg)](LICENSE)
+[![License: GPL-3.0](https://img.shields.io/badge/License-GPL--3.0-d8d8ff.svg)](LICENSE)
 [![No Build](https://img.shields.io/badge/build-none-success.svg)](index.html)
 [![Model](https://img.shields.io/badge/model-自托管%2077MB-informational.svg)](models/depth-anything-v2-small)
 
@@ -135,4 +135,4 @@ npm run build:dmg  # 进一步打成可分发的 .dmg（约 177MB，含 /Applica
 
 ## License
 
-[MIT](LICENSE)
+[GPL-3.0](LICENSE) © 2026 ForJiang
